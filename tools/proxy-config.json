@@ -1,0 +1,24 @@
+{
+  "listen": "0.0.0.0:5701",
+  "target": "http://127.0.0.1:3000",
+  "accessToken": "",
+  "tempDir": "/tmp/snowluma-proxy",
+  "maxVideoSize": 104857600,
+  "maxOutputSize": 99614720,
+  "probeSampleSeconds": 30,
+  "timeoutMs": 3600000,
+  "keepTempFiles": false,
+  "ffmpeg": {
+    "path": "ffmpeg",
+    "ffprobePath": "ffprobe",
+    "opusBitrate": "6k",
+    "opusCompression": 0,
+    "minResolution": "80x60",
+    "minFps": 1,
+    "maxEncodeMinutes": 10
+  },
+  "cache": {
+    "maxAgeDays": 7,
+    "maxDiskMb": 500
+  }
+}
