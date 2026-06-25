@@ -181,6 +181,15 @@ function passthrough(clientReq, clientRes, body) {
     proxyRes.pipe(clientRes);
   });
 
+  proxyReq.setTimeout(30000, () => {
+    proxyReq.destroy();
+    log('ERROR', 'passthrough timeout');
+    if (!clientRes.headersSent) {
+      clientRes.writeHead(504, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ status: 'failed', retcode: 1200, data: null, wording: 'proxy: upstream timeout' }));
+    }
+  });
+
   proxyReq.on('error', (err) => {
     log('ERROR', 'passthrough failed: %s', err.message);
     if (!clientRes.headersSent) {
@@ -198,9 +207,10 @@ function ffprobe(filePath) {
     '-print_format', 'json',
     '-show_format',
     '-show_streams',
+    '-count_frames',
     '-read_intervals', `%+${CFG.probeSampleSeconds}`,
     filePath,
-  ], { timeout: 30000, encoding: 'utf8' });
+  ], { timeout: 60000, encoding: 'utf8' });
 
   if (result.error || result.status !== 0) {
     throw new Error(`ffprobe failed: ${result.error?.message || result.stderr?.slice(0, 200)}`);
