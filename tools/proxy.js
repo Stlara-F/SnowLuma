@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const urlMod = require('url');
 
 const CONFIG_DEFAULTS = {
-  listen: '0.0.0.0:5701',
+    listen: '127.0.0.1:5701',
   target: 'http://127.0.0.1:3000',
   accessToken: '',
   tempDir: '/tmp/snowluma-proxy',
@@ -94,12 +94,14 @@ function uuid() {
   return crypto.randomUUID();
 }
 
-function md5File(filePath) {
-  const fd = fs.openSync(filePath, 'r');
-  const buf = Buffer.alloc(65536);
-  const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
-  fs.closeSync(fd);
-  return crypto.createHash('md5').update(buf.subarray(0, bytesRead)).digest('hex');
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', d => hash.update(d));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
 function ensureDir(dir) {
@@ -153,20 +155,22 @@ function sleep(ms) {
 }
 
 function passthrough(clientReq, clientRes, body) {
+  const headers = {
+    ...clientReq.headers,
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(body),
+  };
+  delete headers.host;
+  if (CFG.accessToken) {
+    headers.authorization = `Bearer ${CFG.accessToken}`;
+  }
   const options = {
     hostname: CFG.targetHost,
     port: CFG.targetPort,
     path: clientReq.url || CFG.targetPath,
     method: clientReq.method || 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body),
-    },
+    headers,
   };
-
-  if (CFG.accessToken) {
-    options.headers['Authorization'] = `Bearer ${CFG.accessToken}`;
-  }
 
   const proxyReq = http.request(options, (proxyRes) => {
     clientRes.statusCode = proxyRes.statusCode || 200;
@@ -388,13 +392,13 @@ async function compressCrfProgressive(inputPath, outputPath) {
       ], CFG.timeoutMs);
 
       const stat = fs.statSync(attemptPath);
-      if (stat.size <= CFG.maxVideoSize) {
+      if (stat.size <= CFG.maxOutputSize) {
         fs.renameSync(attemptPath, outputPath);
         log('CRF', '%s succeeded: %d MB', g.label, Math.round(stat.size / 1048576));
         return;
       }
       log('CRF', '%s output %d MB > %d MB, trying next gradient',
-        g.label, Math.round(stat.size / 1048576), Math.round(CFG.maxVideoSize / 1048576));
+        g.label, Math.round(stat.size / 1048576), Math.round(CFG.maxOutputSize / 1048576));
       fs.unlinkSync(attemptPath);
 
     } catch (err) {
@@ -420,7 +424,7 @@ async function compressPosterOpus(inputPath, outputPath) {
       '-i', inputPath, '-i', posterPath,
       '-c:v', 'libx264', '-crf', '40', '-vf', 'scale=320:240',
       '-c:a', 'libopus', '-b:a', CFG.ffmpeg.opusBitrate,
-      '-shortest', '-map', '1:v', '-map', '0:a',
+      '-shortest', '-map', '1:v', '-map', '0:a?',
       '-fs', String(CFG.maxOutputSize),
       '-movflags', '+faststart',
       '-y', outputPath,
@@ -456,9 +460,10 @@ function compressSplit(inputPath, outputDir) {
   return files;
 }
 
-async function compressVideo(inputPath, fileSize, durationSec) {
+async function compressVideo(inputPath, fileSize) {
   const probeData = ffprobe(inputPath);
   const sceneData = detectSceneChanges(inputPath);
+  const durationSec = parseFloat(probeData.format?.duration || '0');
   const klass = classifyContent(probeData, sceneData, fileSize, durationSec);
 
   const estMin = estimateEncodingTime(probeData);
@@ -490,15 +495,15 @@ async function compressVideo(inputPath, fileSize, durationSec) {
     }
 
     const outStat = fs.statSync(outputPath);
-    if (outStat.size > CFG.maxVideoSize) {
-      log('COMPRESS', 'output %d MB still > %d MB, falling back to split', Math.round(outStat.size / 1048576), Math.round(CFG.maxVideoSize / 1048576));
+    if (outStat.size > CFG.maxOutputSize) {
+      log('COMPRESS', 'output %d MB still > %d MB, falling back to split', Math.round(outStat.size / 1048576), Math.round(CFG.maxOutputSize / 1048576));
       fs.unlinkSync(outputPath);
       const splitDir = path.join(CFG.tempDir, 'chunks', uuid());
       const chunks = compressSplit(inputPath, splitDir);
       return { type: 'split', files: chunks };
     }
 
-    const cacheKey = md5File(inputPath) + '_' + fileSize;
+    const cacheKey = await hashFile(inputPath) + '_' + fileSize;
     const cacheDir = path.join(CFG.tempDir, 'cache');
     const cacheMetaPath = path.join(cacheDir, cacheKey + '.json');
     const cacheFilePath = path.join(cacheDir, cacheKey + '.mp4');
@@ -532,8 +537,8 @@ async function compressVideo(inputPath, fileSize, durationSec) {
   }
 }
 
-function lookupCache(filePath, fileSize) {
-  const cacheKey = md5File(filePath) + '_' + fileSize;
+async function lookupCache(filePath, fileSize) {
+  const cacheKey = await hashFile(filePath) + '_' + fileSize;
   const cacheDir = path.join(CFG.tempDir, 'cache');
   const metaPath = path.join(cacheDir, cacheKey + '.json');
   const dataPath = path.join(cacheDir, cacheKey + '.mp4');
@@ -621,7 +626,7 @@ async function handleVideoInMessage(parsed) {
 
       log('VIDEO', 'processing: %s (%d MB)', path.basename(filePath), Math.round(stat.size / 1048576));
 
-      const cached = lookupCache(filePath, stat.size);
+      const cached = await lookupCache(filePath, stat.size);
       if (cached && cached.type === 'single' && fs.existsSync(cached.file)) {
         const cachedStat = fs.statSync(cached.file);
         if (cachedStat.size <= CFG.maxVideoSize) {
@@ -634,7 +639,7 @@ async function handleVideoInMessage(parsed) {
         }
       }
 
-      const result = await compressVideo(filePath, stat.size, stat.size / (8 * 1024 * 1024));
+      const result = await compressVideo(filePath, stat.size);
 
       if (result.type === 'single') {
         newMsg.push({
@@ -644,7 +649,7 @@ async function handleVideoInMessage(parsed) {
         modified = true;
 
       } else if (result.type === 'split') {
-        pendingSplits.push({ files: result.files, originalData: elem.data });
+        pendingSplits.push({ files: result.files, originalData: elem.data, splitDir: path.dirname(result.files[0]) });
       }
 
     } catch (err) {
@@ -665,7 +670,6 @@ async function handleVideoInMessage(parsed) {
 }
 
 async function sendSplitChunks(action, params, splits, echo) {
-  const lastResults = [];
   for (const split of splits) {
     for (const file of split.files) {
       const splitParams = { ...params, message: [{
@@ -679,7 +683,6 @@ async function sendSplitChunks(action, params, splits, echo) {
       await sleep(200);
     }
   }
-  return lastResults;
 }
 
 function forwardToOneBot(body) {
@@ -746,8 +749,18 @@ async function handleRequest(clientReq, clientRes) {
 
     if (result.pendingSplits.length > 0) {
       sendSplitChunks(result.action, result.params, result.pendingSplits, result.echo)
-        .then(() => log('SPLIT', 'all chunks sent'))
-        .catch(err => log('SPLIT', 'error: %s', err.message));
+        .then(() => {
+          for (const sp of result.pendingSplits) {
+            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch {}
+          }
+          log('SPLIT', 'all chunks sent and cleaned');
+        })
+        .catch(err => {
+          log('SPLIT', 'error: %s', err.message);
+          for (const sp of result.pendingSplits) {
+            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch {}
+          }
+        });
     }
 
     if (result.newMsg.length > 0) {
