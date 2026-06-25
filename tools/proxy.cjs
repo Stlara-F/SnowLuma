@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const crypto = require('crypto');
 const { WebSocket, WebSocketServer } = require('ws');
 
@@ -76,20 +76,34 @@ const log = (tag, msg, ...args) => {
   console.log(`[${ts}][proxy:${tag}] ${msg}`, ...args);
 };
 
-function readOneBotConfig() {
+function readOneBotConfig(selfId) {
   const configDir = path.resolve('config');
   try {
     if (!fs.existsSync(configDir)) return null;
+
+    if (selfId) {
+      const uinPath = path.join(configDir, `onebot_${selfId}.json`);
+      if (fs.existsSync(uinPath)) {
+        const result = parseOneBotClients(JSON.parse(fs.readFileSync(uinPath, 'utf8')));
+        if (result) { log('CONFIG', 'using per-UIN config for %s', selfId); return result; }
+      }
+    }
+
     const files = fs.readdirSync(configDir)
       .filter(f => /^onebot_[\d]+\.json$/.test(f))
       .sort();
+
     if (files.length === 0) {
       const globalPath = path.join(configDir, 'onebot.json');
       if (fs.existsSync(globalPath)) {
-        return parseOneBotClients(JSON.parse(fs.readFileSync(globalPath, 'utf8')));
+        const result = parseOneBotClients(JSON.parse(fs.readFileSync(globalPath, 'utf8')));
+        if (result) log('CONFIG', 'using global config');
+        return result;
       }
       return null;
     }
+
+    log('CONFIG', 'no match for uin=%s, using %s', selfId, files[0]);
     return parseOneBotClients(JSON.parse(fs.readFileSync(path.join(configDir, files[0]), 'utf8')));
   } catch (err) {
     log('CONFIG', 'read onebot config failed: %s', err.message);
@@ -161,8 +175,38 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function ffprobe(filePath) {
-  const result = spawnSync(CFG.ffmpeg.ffprobePath, [
+function runFfmpegCapture(args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(CFG.ffmpeg.ffprobePath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill('SIGTERM');
+      reject(new Error(`ffprobe timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) return;
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`ffprobe exit=${code}: ${stderr.slice(-500)}`));
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`ffprobe spawn: ${err.message}`));
+    });
+  });
+}
+
+async function ffprobe(filePath) {
+  const { stdout } = await runFfmpegCapture([
     '-v', 'quiet',
     '-print_format', 'json',
     '-show_format',
@@ -170,37 +214,32 @@ function ffprobe(filePath) {
     '-count_frames',
     '-read_intervals', `%+${CFG.probeSampleSeconds}`,
     filePath,
-  ], { timeout: 60000, encoding: 'utf8' });
+  ], 60000);
 
-  if (result.error || result.status !== 0) {
-    throw new Error(`ffprobe failed: ${result.error?.message || result.stderr?.slice(0, 200)}`);
-  }
-
-  return JSON.parse(result.stdout);
+  return JSON.parse(stdout);
 }
 
-function detectSceneChanges(filePath) {
-  const result = spawnSync(CFG.ffmpeg.path, [
-    '-i', filePath,
-    '-t', String(CFG.probeSampleSeconds),
-    '-vf', "select='gt(scene,0.1)',metadata=print",
-    '-f', 'null',
-    '-',
-  ], { timeout: 60000, encoding: 'utf8' });
+async function detectSceneChanges(filePath) {
+  try {
+    const { stderr } = await runFfmpegCapture([
+      '-i', filePath,
+      '-t', String(CFG.probeSampleSeconds),
+      '-vf', "select='gt(scene,0.1)',metadata=print",
+      '-f', 'null',
+      '-',
+    ], 60000);
 
-  if (result.error) {
-    log('PROBE', 'scene detect warning: %s', result.error.message);
+    const matches = stderr.match(/Parsed_metadata.*?pts_time:\s*([\d.]+)/g) || [];
+    const ptsTimes = matches.map(m => {
+      const v = m.match(/pts_time:\s*([\d.]+)/);
+      return v ? parseFloat(v[1]) : -1;
+    }).filter(t => t >= 0);
+
+    return { sceneChanges: ptsTimes.length, sceneTimes: ptsTimes };
+  } catch (err) {
+    log('PROBE', 'scene detect warning: %s', err.message);
     return { sceneChanges: -1 };
   }
-
-  const stderr = result.stderr || '';
-  const matches = stderr.match(/Parsed_metadata.*?pts_time:\s*([\d.]+)/g) || [];
-  const ptsTimes = matches.map(m => {
-    const v = m.match(/pts_time:\s*([\d.]+)/);
-    return v ? parseFloat(v[1]) : -1;
-  }).filter(t => t >= 0);
-
-  return { sceneChanges: ptsTimes.length, sceneTimes: ptsTimes };
 }
 
 const CLASS_ULTRA_REPETITIVE = 'ultra-repetitive';
@@ -407,20 +446,17 @@ async function compressPosterOpus(inputPath, outputPath) {
   }
 }
 
-function compressSplit(inputPath, outputDir) {
+async function compressSplit(inputPath, outputDir) {
   ensureDir(outputDir);
   const pattern = path.join(outputDir, 'chunk_%03d.mp4');
-  const result = spawnSync(CFG.ffmpeg.path, [
+
+  await runFfmpeg([
     '-i', inputPath,
     '-c', 'copy', '-map', '0',
     '-f', 'segment', '-segment_time', '600',
     '-reset_timestamps', '1',
     '-y', pattern,
-  ], { timeout: 300000, encoding: 'utf8' });
-
-  if (result.error || result.status !== 0) {
-    throw new Error(`split failed: ${result.error?.message || result.stderr?.slice(0, 200)}`);
-  }
+  ], 300000);
 
   const files = fs.readdirSync(outputDir)
     .filter(f => f.endsWith('.mp4'))
@@ -431,8 +467,8 @@ function compressSplit(inputPath, outputDir) {
 }
 
 async function compressVideo(inputPath, fileSize) {
-  const probeData = ffprobe(inputPath);
-  const sceneData = detectSceneChanges(inputPath);
+  const probeData = await ffprobe(inputPath);
+  const sceneData = await detectSceneChanges(inputPath);
   const durationSec = parseFloat(probeData.format?.duration || '0');
   const klass = classifyContent(probeData, sceneData, fileSize, durationSec);
 
@@ -442,7 +478,7 @@ async function compressVideo(inputPath, fileSize) {
   if (estMin > CFG.ffmpeg.maxEncodeMinutes && klass !== CLASS_ULTRA_REPETITIVE) {
     log('COMPRESS', 'encoding time ~%d min > max (%d min), falling back to split', Math.round(estMin), CFG.ffmpeg.maxEncodeMinutes);
     const splitDir = path.join(CFG.tempDir, 'chunks', uuid());
-    const chunks = compressSplit(inputPath, splitDir);
+    const chunks = await compressSplit(inputPath, splitDir);
     return { type: 'split', files: chunks };
   }
 
@@ -469,7 +505,7 @@ async function compressVideo(inputPath, fileSize) {
       log('COMPRESS', 'output %d MB still > %d MB, falling back to split', Math.round(outStat.size / 1048576), Math.round(CFG.maxOutputSize / 1048576));
       fs.unlinkSync(outputPath);
       const splitDir = path.join(CFG.tempDir, 'chunks', uuid());
-      const chunks = compressSplit(inputPath, splitDir);
+      const chunks = await compressSplit(inputPath, splitDir);
       return { type: 'split', files: chunks };
     }
 
@@ -502,7 +538,7 @@ async function compressVideo(inputPath, fileSize) {
     log('COMPRESS', 'strategy %s failed: %s, falling back to split', klass, err.message);
     try { fs.unlinkSync(outputPath); } catch {}
     const splitDir = path.join(CFG.tempDir, 'chunks', uuid());
-    const chunks = compressSplit(inputPath, splitDir);
+    const chunks = await compressSplit(inputPath, splitDir);
     return { type: 'split', files: chunks };
   }
 }
@@ -568,49 +604,6 @@ function safeSend(ws, data) {
     }
   } catch (err) {
     log('WS', 'send failed: %s', err.message);
-  }
-}
-
-async function handleVideoMessage(raw, sendFn) {
-  const parsed = parseOneBotBody(raw);
-  if (!parsed || !isVideoAction(parsed)) return false;
-
-  log('WS', 'intercepted %s with video element(s)', parsed.action);
-
-  try {
-    const result = await processVideoInMessage(parsed);
-    if (!result) return false;
-
-    if (result.pendingSplits.length > 0) {
-      sendSplitChunks(result.action, result.params, result.pendingSplits, result.echo, sendFn)
-        .then(() => {
-          for (const sp of result.pendingSplits) {
-            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
-          }
-          log('SPLIT', 'all chunks sent and cleaned');
-        })
-        .catch(err => {
-          log('SPLIT', 'error: %s', err.message);
-          for (const sp of result.pendingSplits) {
-            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
-          }
-        });
-    }
-
-    if (result.newMsg.length > 0) {
-      const modified = JSON.stringify({
-        action: result.action,
-        params: { ...result.params, message: result.newMsg },
-        echo: result.echo,
-      });
-      log('WS', 'forwarding compressed message (%d elements)', result.newMsg.length);
-      sendFn(modified);
-    }
-
-    return true;
-  } catch (err) {
-    log('WS', 'processing error: %s', err.message);
-    return false;
   }
 }
 
@@ -694,7 +687,7 @@ function establishLink(downstream, req) {
 
   log('WS', 'SnowLuma connected (uin=%s, role=%s)', selfId, role);
 
-  const obCfg = readOneBotConfig();
+  const obCfg = readOneBotConfig(selfId);
   if (!obCfg) {
     log('FATAL', 'no onebot config with upstream field found');
     downstream.close(1011, 'proxy: upstream not configured - add upstream to wsClients in WebUI');
@@ -708,6 +701,53 @@ function establishLink(downstream, req) {
 
   let upstream = null;
   let closed = false;
+  const msgQueue = [];
+  let processing = false;
+  const pendingDownstream = [];
+  const MAX_PENDING = 256;
+
+  const processQueue = async () => {
+    if (processing) return;
+    processing = true;
+
+    while (msgQueue.length > 0) {
+      const { raw, sendFn } = msgQueue.shift();
+      try {
+        const handled = await processVideoInMessage(parseOneBotBody(raw));
+        if (handled) {
+          if (handled.pendingSplits.length > 0) {
+            sendSplitChunks(handled.action, handled.params, handled.pendingSplits, handled.echo, sendFn)
+              .then(() => {
+                for (const sp of handled.pendingSplits) {
+                  try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
+                }
+              })
+              .catch(err => {
+                log('SPLIT', 'error: %s', err.message);
+                for (const sp of handled.pendingSplits) {
+                  try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
+                }
+              });
+          }
+          if (handled.newMsg.length > 0) {
+            sendFn(JSON.stringify({
+              action: handled.action,
+              params: { ...handled.params, message: handled.newMsg },
+              echo: handled.echo,
+            }));
+            log('WS', 'forwarded compressed message (%d elements)', handled.newMsg.length);
+          }
+        } else {
+          sendFn(raw);
+        }
+      } catch (err) {
+        log('WS', 'queue process error: %s', err.message);
+        sendFn(raw);
+      }
+    }
+
+    processing = false;
+  };
 
   const cleanup = () => {
     closed = true;
@@ -728,15 +768,15 @@ function establishLink(downstream, req) {
 
     upstream.on('open', () => {
       log('WS', 'upstream connected');
+      for (const msg of pendingDownstream) { safeSend(upstream, msg); }
+      pendingDownstream.length = 0;
     });
 
     upstream.on('message', (data, isBinary) => {
       const raw = isBinary && Buffer.isBuffer(data) ? data.toString() : data;
       const sendFn = (body) => safeSend(downstream, body);
-
-      handleVideoMessage(raw, sendFn).then(handled => {
-        if (!handled) safeSend(downstream, raw);
-      });
+      msgQueue.push({ raw, sendFn });
+      processQueue();
     });
 
     upstream.on('close', () => {
@@ -754,6 +794,8 @@ function establishLink(downstream, req) {
     const raw = isBinary && Buffer.isBuffer(data) ? data : data;
     if (upstream && upstream.readyState === WebSocket.OPEN) {
       safeSend(upstream, raw);
+    } else if (pendingDownstream.length < MAX_PENDING) {
+      pendingDownstream.push(raw);
     }
   });
 
