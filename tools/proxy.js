@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
-const urlMod = require('url');
+const { WebSocket, WebSocketServer } = require('ws');
 
 const CONFIG_DEFAULTS = {
-    listen: '127.0.0.1:5701',
-  target: 'http://127.0.0.1:3000',
-  accessToken: '',
+  listen: '0.0.0.0:5701',
   tempDir: '/tmp/snowluma-proxy',
   maxVideoSize: 100 * 1024 * 1024,
   maxOutputSize: 95 * 1024 * 1024,
@@ -43,23 +40,12 @@ function loadConfig() {
     console.warn('[proxy] config file parse failed:', e.message);
   }
 
-  const envCfg = {};
-  if (process.env.PROXY_LISTEN) envCfg.listen = process.env.PROXY_LISTEN;
-  if (process.env.PROXY_TARGET) envCfg.target = process.env.PROXY_TARGET;
-  if (process.env.PROXY_TEMP_DIR) envCfg.tempDir = process.env.PROXY_TEMP_DIR;
-  if (process.env.PROXY_ACCESS_TOKEN) envCfg.accessToken = process.env.PROXY_ACCESS_TOKEN;
-
-  const merged = deepMerge(CONFIG_DEFAULTS, fileCfg);
-  deepMerge(merged, envCfg);
+  const merged = deepMerge({}, CONFIG_DEFAULTS);
+  deepMerge(merged, fileCfg);
 
   const [host, portStr] = merged.listen.split(':');
   merged.listenHost = host || '0.0.0.0';
   merged.listenPort = parseInt(portStr, 10) || 5701;
-
-  const parsed = urlMod.parse(merged.target);
-  merged.targetHost = parsed.hostname || '127.0.0.1';
-  merged.targetPort = parseInt(parsed.port, 10) || 3000;
-  merged.targetPath = parsed.path || '/';
 
   const [mw, mh] = (merged.ffmpeg.minResolution || '80x60').split('x').map(Number);
   merged.ffmpeg._minW = mw || 80;
@@ -90,6 +76,38 @@ const log = (tag, msg, ...args) => {
   console.log(`[${ts}][proxy:${tag}] ${msg}`, ...args);
 };
 
+function readOneBotConfig() {
+  const configDir = path.resolve('config');
+  try {
+    if (!fs.existsSync(configDir)) return null;
+    const files = fs.readdirSync(configDir)
+      .filter(f => /^onebot_[\d]+\.json$/.test(f))
+      .sort();
+    if (files.length === 0) {
+      const globalPath = path.join(configDir, 'onebot.json');
+      if (fs.existsSync(globalPath)) {
+        return parseOneBotClients(JSON.parse(fs.readFileSync(globalPath, 'utf8')));
+      }
+      return null;
+    }
+    return parseOneBotClients(JSON.parse(fs.readFileSync(path.join(configDir, files[0]), 'utf8')));
+  } catch (err) {
+    log('CONFIG', 'read onebot config failed: %s', err.message);
+    return null;
+  }
+}
+
+function parseOneBotClients(cfg) {
+  const wsClients = cfg.networks?.wsClients || cfg.wsClients || [];
+  if (!Array.isArray(wsClients) || wsClients.length === 0) return null;
+  const entry = wsClients.find(c => c.upstream);
+  if (!entry) {
+    log('CONFIG', 'no wsClients entry with upstream field found');
+    return null;
+  }
+  return { upstream: entry.upstream, accessToken: entry.accessToken || '' };
+}
+
 function uuid() {
   return crypto.randomUUID();
 }
@@ -108,6 +126,11 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function getVideoSource(elem) {
+  if (!elem || !elem.data) return null;
+  return elem.data.file || elem.data.url || elem.data.path || elem.data.media || null;
+}
+
 function resolveSource(source) {
   if (!source || typeof source !== 'string') return null;
   if (/^base64:\/\//i.test(source)) return null;
@@ -121,9 +144,7 @@ function resolveSource(source) {
 }
 
 function parseOneBotBody(raw) {
-  try {
-    return JSON.parse(raw);
-  } catch { return null; }
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 function isVideoAction(parsed) {
@@ -133,72 +154,11 @@ function isVideoAction(parsed) {
   if (!valid) return false;
   const msg = parsed.params?.message;
   if (!Array.isArray(msg)) return false;
-  return msg.some(e => e && e.type === 'video' && e.data && e.data.file);
-}
-
-async function readBody(req, maxBytes = 2 * 1024 * 1024) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let total = 0;
-    req.on('data', c => {
-      total += c.length;
-      if (total > maxBytes) { req.destroy(); reject(new Error('body too large')); return; }
-      chunks.push(c);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
-  });
+  return msg.some(e => e && e.type === 'video' && getVideoSource(e));
 }
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
-}
-
-function passthrough(clientReq, clientRes, body) {
-  const headers = {
-    ...clientReq.headers,
-    'content-type': 'application/json',
-    'content-length': Buffer.byteLength(body),
-  };
-  delete headers.host;
-  if (CFG.accessToken) {
-    headers.authorization = `Bearer ${CFG.accessToken}`;
-  }
-  const options = {
-    hostname: CFG.targetHost,
-    port: CFG.targetPort,
-    path: clientReq.url || CFG.targetPath,
-    method: clientReq.method || 'POST',
-    headers,
-  };
-
-  const proxyReq = http.request(options, (proxyRes) => {
-    clientRes.statusCode = proxyRes.statusCode || 200;
-    const headers = { ...proxyRes.headers };
-    delete headers['content-encoding'];
-    delete headers['transfer-encoding'];
-    clientRes.writeHead(proxyRes.statusCode || 200, headers);
-    proxyRes.pipe(clientRes);
-  });
-
-  proxyReq.setTimeout(30000, () => {
-    proxyReq.destroy();
-    log('ERROR', 'passthrough timeout');
-    if (!clientRes.headersSent) {
-      clientRes.writeHead(504, { 'Content-Type': 'application/json' });
-      clientRes.end(JSON.stringify({ status: 'failed', retcode: 1200, data: null, wording: 'proxy: upstream timeout' }));
-    }
-  });
-
-  proxyReq.on('error', (err) => {
-    log('ERROR', 'passthrough failed: %s', err.message);
-    if (!clientRes.headersSent) {
-      clientRes.writeHead(502, { 'Content-Type': 'application/json' });
-      clientRes.end(JSON.stringify({ status: 'failed', retcode: 1200, data: null, wording: 'proxy: target unreachable' }));
-    }
-  });
-
-  proxyReq.end(body);
 }
 
 function ffprobe(filePath) {
@@ -601,13 +561,66 @@ function cleanCache() {
 setInterval(cleanCache, 3600000);
 cleanCache();
 
-async function handleVideoInMessage(parsed) {
+function safeSend(ws, data) {
+  try {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(data);
+    }
+  } catch (err) {
+    log('WS', 'send failed: %s', err.message);
+  }
+}
+
+async function handleVideoMessage(raw, sendFn) {
+  const parsed = parseOneBotBody(raw);
+  if (!parsed || !isVideoAction(parsed)) return false;
+
+  log('WS', 'intercepted %s with video element(s)', parsed.action);
+
+  try {
+    const result = await processVideoInMessage(parsed);
+    if (!result) return false;
+
+    if (result.pendingSplits.length > 0) {
+      sendSplitChunks(result.action, result.params, result.pendingSplits, result.echo, sendFn)
+        .then(() => {
+          for (const sp of result.pendingSplits) {
+            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
+          }
+          log('SPLIT', 'all chunks sent and cleaned');
+        })
+        .catch(err => {
+          log('SPLIT', 'error: %s', err.message);
+          for (const sp of result.pendingSplits) {
+            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
+          }
+        });
+    }
+
+    if (result.newMsg.length > 0) {
+      const modified = JSON.stringify({
+        action: result.action,
+        params: { ...result.params, message: result.newMsg },
+        echo: result.echo,
+      });
+      log('WS', 'forwarding compressed message (%d elements)', result.newMsg.length);
+      sendFn(modified);
+    }
+
+    return true;
+  } catch (err) {
+    log('WS', 'processing error: %s', err.message);
+    return false;
+  }
+}
+
+async function processVideoInMessage(parsed) {
   const params = parsed.params || {};
   const msg = params.message || [];
   let modified = false;
 
   const newMsg = [];
-  let pendingSplits = [];
+  const pendingSplits = [];
 
   for (const elem of msg) {
     if (!elem || elem.type !== 'video') {
@@ -615,7 +628,7 @@ async function handleVideoInMessage(parsed) {
       continue;
     }
 
-    const filePath = resolveSource(elem.data?.file);
+    const filePath = resolveSource(getVideoSource(elem));
     if (!filePath) {
       newMsg.push(elem);
       continue;
@@ -640,10 +653,7 @@ async function handleVideoInMessage(parsed) {
       if (cached && cached.type === 'single' && fs.existsSync(cached.file)) {
         const cachedStat = fs.statSync(cached.file);
         if (cachedStat.size <= CFG.maxOutputSize) {
-          newMsg.push({
-            type: 'video',
-            data: { ...elem.data, file: cached.file },
-          });
+          newMsg.push({ type: 'video', data: { ...elem.data, file: cached.file } });
           modified = true;
           continue;
         }
@@ -652,164 +662,134 @@ async function handleVideoInMessage(parsed) {
       const result = await compressVideo(filePath, stat.size);
 
       if (result.type === 'single') {
-        newMsg.push({
-          type: 'video',
-          data: { ...elem.data, file: result.file },
-        });
+        newMsg.push({ type: 'video', data: { ...elem.data, file: result.file } });
         modified = true;
-
       } else if (result.type === 'split') {
         pendingSplits.push({ files: result.files, originalData: elem.data, splitDir: path.dirname(result.files[0]) });
       }
-
     } catch (err) {
-      log('VIDEO', 'error processing %s: %s', elem.data?.file, err.message);
+      log('VIDEO', 'error processing %s: %s', getVideoSource(elem), err.message);
       newMsg.push(elem);
     }
   }
 
   if (!modified && pendingSplits.length === 0) return null;
-
-  return {
-    newMsg,
-    pendingSplits,
-    params,
-    action: parsed.action,
-    echo: parsed.echo,
-  };
+  return { newMsg, pendingSplits, params, action: parsed.action, echo: parsed.echo };
 }
 
-async function sendSplitChunks(action, params, splits, echo) {
+async function sendSplitChunks(action, params, splits, echo, sendFn) {
   for (const split of splits) {
     for (const file of split.files) {
-      const splitParams = { ...params, message: [{
-        type: 'video',
-        data: { ...split.originalData, file },
-      }]};
-
-      const body = JSON.stringify({ action, params: splitParams, echo });
-      await forwardToOneBot(body);
-
+      const splitParams = { ...params, message: [{ type: 'video', data: { ...split.originalData, file } }] };
+      sendFn(JSON.stringify({ action, params: splitParams, echo }));
       await sleep(200);
     }
   }
 }
 
-function forwardToOneBot(body) {
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: CFG.targetHost,
-      port: CFG.targetPort,
-      path: CFG.targetPath,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
+function establishLink(downstream, req) {
+  const selfId = req.headers['x-self-id'] || '';
+  const role = req.headers['x-client-role'] || 'Universal';
+  const clientToken = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+
+  log('WS', 'SnowLuma connected (uin=%s, role=%s)', selfId, role);
+
+  const obCfg = readOneBotConfig();
+  if (!obCfg) {
+    log('FATAL', 'no onebot config with upstream field found');
+    downstream.close(1011, 'proxy: upstream not configured - add upstream to wsClients in WebUI');
+    return;
+  }
+
+  const upstreamUrl = obCfg.upstream;
+  const upstreamToken = obCfg.accessToken || clientToken;
+
+  log('WS', 'connecting to upstream %s', upstreamUrl);
+
+  let upstream = null;
+  let closed = false;
+
+  const cleanup = () => {
+    closed = true;
+    if (upstream) { try { upstream.close(); } catch {} }
+  };
+
+  const connectUpstream = () => {
+    if (closed) return;
+
+    const headers = {
+      'User-Agent': 'OneBot/11',
+      'X-Self-ID': selfId,
+      'X-Client-Role': role,
     };
+    if (upstreamToken) headers['Authorization'] = `Bearer ${upstreamToken}`;
 
-    if (CFG.accessToken) {
-      options.headers['Authorization'] = `Bearer ${CFG.accessToken}`;
-    }
+    upstream = new WebSocket(upstreamUrl, { headers });
 
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', c => data += c.toString());
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); } catch { resolve({ status: 'failed' }); }
+    upstream.on('open', () => {
+      log('WS', 'upstream connected');
+    });
+
+    upstream.on('message', (data, isBinary) => {
+      const raw = isBinary && Buffer.isBuffer(data) ? data.toString() : data;
+      const sendFn = (body) => safeSend(downstream, body);
+
+      handleVideoMessage(raw, sendFn).then(handled => {
+        if (!handled) safeSend(downstream, raw);
       });
     });
-    req.on('error', reject);
-    req.end(body);
+
+    upstream.on('close', () => {
+      log('WS', 'upstream disconnected, reconnecting in 5s');
+      upstream = null;
+      if (!closed) setTimeout(connectUpstream, 5000);
+    });
+
+    upstream.on('error', (err) => {
+      log('WS', 'upstream error: %s', err.message);
+    });
+  };
+
+  downstream.on('message', (data, isBinary) => {
+    const raw = isBinary && Buffer.isBuffer(data) ? data : data;
+    if (upstream && upstream.readyState === WebSocket.OPEN) {
+      safeSend(upstream, raw);
+    }
   });
+
+  downstream.on('close', () => {
+    log('WS', 'downstream disconnected');
+    cleanup();
+  });
+
+  downstream.on('error', () => cleanup());
+
+  connectUpstream();
 }
 
-async function handleRequest(clientReq, clientRes) {
-  let body;
-  try {
-    body = await readBody(clientReq);
-  } catch (err) {
-    log('HTTP', 'read body error: %s', err.message);
-    clientRes.writeHead(400, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({ status: 'failed', retcode: 1400, data: null, wording: 'proxy: ' + err.message }));
-    return;
-  }
+function startServer() {
+  const wss = new WebSocketServer({ host: CFG.listenHost, port: CFG.listenPort });
 
-  const parsed = parseOneBotBody(body);
-  if (!parsed) {
-    passthrough(clientReq, clientRes, body);
-    return;
-  }
+  wss.on('connection', (downstream, req) => {
+    establishLink(downstream, req);
+  });
 
-  if (!isVideoAction(parsed)) {
-    passthrough(clientReq, clientRes, body);
-    return;
-  }
+  wss.on('error', (err) => {
+    log('FATAL', 'WS server error: %s', err.message);
+  });
 
-  log('HTTP', 'intercepted %s with video element(s)', parsed.action);
-
-  try {
-    const result = await handleVideoInMessage(parsed);
-
-    if (!result) {
-      log('HTTP', 'no oversized video, passthrough');
-      passthrough(clientReq, clientRes, body);
-      return;
-    }
-
-    if (result.pendingSplits.length > 0) {
-      sendSplitChunks(result.action, result.params, result.pendingSplits, result.echo)
-        .then(() => {
-          for (const sp of result.pendingSplits) {
-            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
-          }
-          log('SPLIT', 'all chunks sent and cleaned');
-        })
-        .catch(err => {
-          log('SPLIT', 'error: %s', err.message);
-          for (const sp of result.pendingSplits) {
-            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
-          }
-        });
-    }
-
-    if (result.newMsg.length > 0) {
-      const modifiedBody = JSON.stringify({
-        action: result.action,
-        params: { ...result.params, message: result.newMsg },
-        echo: result.echo,
-      });
-      log('HTTP', 'forwarding compressed message (%d elements)', result.newMsg.length);
-      passthrough(clientReq, clientRes, modifiedBody);
-    } else {
-      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-      clientRes.end(JSON.stringify({
-        status: 'ok', retcode: 0, data: { message_id: 0 },
-        wording: 'video split into multiple messages',
-        echo: result.echo,
-      }));
-    }
-
-  } catch (err) {
-    log('HTTP', 'processing error: %s', err.message);
-    passthrough(clientReq, clientRes, body);
-  }
-}
-
-const server = http.createServer(handleRequest);
-
-server.listen(CFG.listenPort, CFG.listenHost, () => {
   console.log('');
   console.log('  ╔══════════════════════════════════════════╗');
-  console.log('  ║   SnowLuma Video Oversize Proxy         ║');
+  console.log('  ║   SnowLuma Video Oversize Proxy (WS)    ║');
   console.log('  ║──────────────────────────────────────────║');
-  console.log(`  ║   Listen : ${CFG.listenHost}:${CFG.listenPort}               ║`);
-  console.log(`  ║   Target: ${CFG.target}                    ║`);
-  console.log(`  ║   Temp  : ${CFG.tempDir}     ║`);
-  console.log(`  ║   Limit : ${Math.round(CFG.maxVideoSize / 1048576)} MB → ≤${Math.round(CFG.maxOutputSize / 1048576)} MB             ║`);
+  console.log(`  ║   Listen : ${CFG.listenHost}:${CFG.listenPort}                ║`);
+  console.log(`  ║   Temp   : ${CFG.tempDir}     ║`);
+  console.log(`  ║   Limit  : ${Math.round(CFG.maxVideoSize / 1048576)} MB → ≤${Math.round(CFG.maxOutputSize / 1048576)} MB            ║`);
   console.log('  ╚══════════════════════════════════════════╝');
   console.log('');
-});
+}
+
+startServer();
 
 process.on('uncaughtException', (err) => {
   log('FATAL', 'uncaught: %s', err.message);
