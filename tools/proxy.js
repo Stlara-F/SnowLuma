@@ -629,7 +629,7 @@ async function handleVideoInMessage(parsed) {
       const cached = await lookupCache(filePath, stat.size);
       if (cached && cached.type === 'single' && fs.existsSync(cached.file)) {
         const cachedStat = fs.statSync(cached.file);
-        if (cachedStat.size <= CFG.maxVideoSize) {
+        if (cachedStat.size <= CFG.maxOutputSize) {
           newMsg.push({
             type: 'video',
             data: { ...elem.data, file: cached.file },
@@ -751,14 +751,14 @@ async function handleRequest(clientReq, clientRes) {
       sendSplitChunks(result.action, result.params, result.pendingSplits, result.echo)
         .then(() => {
           for (const sp of result.pendingSplits) {
-            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch {}
+            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
           }
           log('SPLIT', 'all chunks sent and cleaned');
         })
         .catch(err => {
           log('SPLIT', 'error: %s', err.message);
           for (const sp of result.pendingSplits) {
-            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch {}
+            try { fs.rmSync(sp.splitDir, { recursive: true, force: true }); } catch (e) { log('CLEANUP', 'rm failed: %s', e.message); }
           }
         });
     }
