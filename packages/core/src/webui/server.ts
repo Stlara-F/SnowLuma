@@ -1352,34 +1352,33 @@ export async function initWebUI(
       const projectRoot = existsSync(scriptPathProd) ? cwdProd : cwdDev;
 
       const taskId = generateTaskId();
-      const proc = spawn('node', [scriptPath, '--input', input, '--group', String(group)], {
+      const proc = spawn(process.execPath, [scriptPath, '--input', input, '--group', String(group)], {
         cwd: projectRoot,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 3_600_000,
       });
 
-      let stdout = '';
-      let stderr = '';
-      proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-      proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-
-      const task = {
+      const task: {
+        id: string; pid: number | undefined; startedAt: number; running: boolean;
+        stdout: string; stderr: string; exitCode: number | null; proc: typeof proc;
+      } = {
         id: taskId,
         pid: proc.pid,
         startedAt: Date.now(),
         running: true,
-        stdout,
-        stderr,
+        stdout: '',
+        stderr: '',
         exitCode: null,
         proc,
       };
       largeVideoTasks.set(taskId, task);
 
+      proc.stdout.on('data', (chunk) => { task.stdout += chunk.toString(); });
+      proc.stderr.on('data', (chunk) => { task.stderr += chunk.toString(); });
+
       proc.on('close', (code) => {
         task.running = false;
         task.exitCode = code;
-        task.stdout = stdout;
-        task.stderr = stderr;
       });
 
       log.info('large-video task %s started (pid=%d, input=%s, group=%s)', taskId, proc.pid, input, group);
@@ -1406,6 +1405,21 @@ export async function initWebUI(
       },
     });
   });
+
+  // ─── periodic cleanup of finished large-video tasks (TTL 30 min) ────────
+  const TASK_TTL_MS = 30 * 60 * 1000;
+  const taskCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, t] of largeVideoTasks) {
+      if (!t.running && now - t.startedAt > TASK_TTL_MS) {
+        largeVideoTasks.delete(id);
+        log.info('large-video task %s cleaned up after TTL', id);
+      }
+    }
+  }, 5 * 60 * 1000);
+  if (typeof taskCleanupTimer === 'object' && taskCleanupTimer.unref) {
+    taskCleanupTimer.unref();
+  }
 
   // ─── Static frontend ─────────────────────────────────────────────────────
   // Build path is relative to the bundled / dev __dirname. SPA fallback to

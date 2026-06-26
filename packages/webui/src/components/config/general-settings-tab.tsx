@@ -118,7 +118,6 @@ const TOKEN_KEY = 'snowluma_token';
 function LargeVideoSection() {
   const [videoPath, setVideoPath] = useState('');
   const [groupId, setGroupId] = useState('');
-  const [taskId, setTaskId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [stdout, setStdout] = useState('');
   const [stderr, setStderr] = useState('');
@@ -168,7 +167,6 @@ function LargeVideoSection() {
       });
       const data = await res.json();
       if (data.success && data.taskId) {
-        setTaskId(data.taskId);
         setRunning(true);
         setStdout('');
         setStderr('');

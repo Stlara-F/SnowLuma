@@ -15,7 +15,7 @@
  *   - Node.js >= 18（内置 fetch）
  */
 
-import { execSync, spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -73,8 +73,8 @@ function log(level, msg, ...args) {
 
 function checkTool(name) {
   try {
-    execSync(`"${name}" -version`, { stdio: 'pipe', timeout: 10_000 });
-    return true;
+    const result = spawnSync(name, ['-version'], { stdio: 'pipe', timeout: 10_000 });
+    return result.status === 0;
   } catch {
     return false;
   }
@@ -124,9 +124,16 @@ function findOneBotConfig(configDir) {
 function probeVideo(inputPath) {
   log('INFO', `正在探测视频: ${inputPath}`);
 
-  const probeCmd = `"ffprobe" -v error -show_entries format=duration,size,bit_rate -of json ${JSON.stringify(inputPath)}`;
-  const stdout = execSync(probeCmd, { encoding: 'utf-8', timeout: 30_000 });
-  const info = JSON.parse(stdout);
+  const result = spawnSync('ffprobe', [
+    '-v', 'error',
+    '-show_entries', 'format=duration,size,bit_rate',
+    '-of', 'json',
+    inputPath,
+  ], { encoding: 'utf-8', timeout: 30_000 });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `ffprobe 退出码 ${result.status}`);
+  }
+  const info = JSON.parse(result.stdout);
 
   const size = parseInt(info.format.size, 10);
   const duration = parseFloat(info.format.duration);
@@ -390,6 +397,7 @@ async function main() {
   log('INFO', `临时目录: ${tempDir}`);
 
   const segmentFiles = [];
+  const results = [];
 
   try {
     // ── 分割 ──
@@ -410,7 +418,6 @@ async function main() {
     // ── 串行上传 ──
     log('INFO', '');
     log('INFO', '开始上传（串行，每次 ~95MB 峰值内存）...');
-    const results = [];
 
     for (let i = 0; i < segmentFiles.length; i++) {
       const file = segmentFiles[i];
@@ -472,7 +479,7 @@ async function main() {
   }
 
   if (segmentFiles.some((_, i) => {
-    const r = results?.find(rr => rr.index === i);
+    const r = results.find(rr => rr.index === i);
     return r && !r.success;
   })) {
     process.exit(2);
