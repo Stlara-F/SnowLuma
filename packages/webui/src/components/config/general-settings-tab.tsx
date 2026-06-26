@@ -3,9 +3,11 @@
 // `#sl` status command. Edits here mark the config dirty and are
 // auto-saved with debounce by the parent ConfigPage.
 
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ToggleSwitch } from '@/components/ui/toggle-switch';
+import { Button } from '@/components/ui/button';
 import { NotificationOptIn } from '@/components/config/notification-opt-in';
 import type { OneBotConfig, StatusCommandConfig } from '@/types';
 
@@ -103,6 +105,145 @@ export function GeneralSettingsTab({ config, onChange }: GeneralSettingsTabProps
         selectedIds={config.notifications?.channelIds ?? []}
         onChange={(channelIds) => onChange({ ...config, notifications: { channelIds } })}
       />
+
+      <LargeVideoSection />
+    </div>
+  );
+}
+
+// ─── Large Video Upload ──────────────────────────────────────────────────
+
+const TOKEN_KEY = 'snowluma_token';
+
+function LargeVideoSection() {
+  const [videoPath, setVideoPath] = useState('');
+  const [groupId, setGroupId] = useState('');
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [stdout, setStdout] = useState('');
+  const [stderr, setStderr] = useState('');
+  const [exitCode, setExitCode] = useState<number | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const token = localStorage.getItem(TOKEN_KEY);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    return stopPolling;
+  }, [stopPolling]);
+
+  const startPolling = useCallback((id: string) => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const headers: Record<string, string> = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const res = await fetch(`/api/large-video/task/${id}`, { headers });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.success) return;
+        const t = data.task;
+        setStdout(t.stdout || '');
+        setStderr(t.stderr || '');
+        setExitCode(t.exitCode);
+        setRunning(t.running);
+        if (!t.running) stopPolling();
+      } catch { /* poll retry */ }
+    }, 1000);
+  }, [token, stopPolling]);
+
+  const handleSend = async () => {
+    if (!videoPath.trim() || !groupId.trim()) return;
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch('/api/large-video/send', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ input: videoPath.trim(), group: Number(groupId) }),
+      });
+      const data = await res.json();
+      if (data.success && data.taskId) {
+        setTaskId(data.taskId);
+        setRunning(true);
+        setStdout('');
+        setStderr('');
+        setExitCode(null);
+        startPolling(data.taskId);
+      } else {
+        setStderr(data.message || '启动失败');
+      }
+    } catch (err) {
+      setStderr(err instanceof Error ? err.message : '网络错误');
+    }
+  };
+
+  const isDone = exitCode !== null;
+  const hasRunningTask = running && !isDone;
+
+  return (
+    <div className="rounded-lg border bg-card/40 p-4">
+      <Label>大视频上传</Label>
+      <p className="mt-1 mb-3 text-[11px] leading-relaxed text-muted-foreground">
+        将大于 95MB 的视频分割为多个 ≤95MB 的分段，通过 OneBot HTTP API 串行发送到目标群聊。
+        需要系统中已安装 ffmpeg + ffprobe。
+      </p>
+
+      <div className="flex flex-col gap-2">
+        <Input
+          placeholder="视频文件完整路径，如 D:\videos\demo.mp4"
+          value={videoPath}
+          disabled={hasRunningTask}
+          onChange={(e) => setVideoPath(e.target.value)}
+        />
+        <div className="flex gap-2">
+          <Input
+            type="number"
+            className="w-40 tabular-nums"
+            placeholder="目标群号"
+            value={groupId}
+            disabled={hasRunningTask}
+            onChange={(e) => setGroupId(e.target.value)}
+          />
+          <Button
+            className="shrink-0"
+            disabled={hasRunningTask || !videoPath.trim() || !groupId.trim()}
+            onClick={handleSend}
+          >
+            {hasRunningTask ? '上传中...' : '上传'}
+          </Button>
+        </div>
+      </div>
+
+      {hasRunningTask && (
+        <div className="mt-3">
+          <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+          </div>
+        </div>
+      )}
+
+      {stdout && (
+        <pre className="mt-3 max-h-48 overflow-auto rounded bg-black/5 p-2 text-[11px] leading-relaxed whitespace-pre-wrap font-mono">
+          {stdout}
+        </pre>
+      )}
+
+      {stderr && (
+        <pre className="mt-1 max-h-24 overflow-auto rounded bg-destructive/10 p-2 text-[11px] leading-relaxed whitespace-pre-wrap font-mono text-destructive">
+          {stderr}
+        </pre>
+      )}
+
+      {isDone && (
+        <p className={`mt-2 text-xs font-medium ${exitCode === 0 ? 'text-green-600' : 'text-destructive'}`}>
+          {exitCode === 0 ? '✓ 上传完成' : `✗ 上传失败 (退出码 ${exitCode})`}
+        </p>
+      )}
     </div>
   );
 }

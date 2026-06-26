@@ -6,7 +6,7 @@ import { loadOneBotConfig, saveOneBotConfig } from '@snowluma/onebot/config';
 import type { OneBotManager } from '@snowluma/onebot/manager';
 import type { OneBotConfig, JsonObject as OneBotJsonObject } from '@snowluma/onebot/types';
 import { readRuntimeConfig, updateRuntimeConfig, resolveRuntimeEnvOverrides } from '@snowluma/common/runtime';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { createServer as createHttpsServer } from 'https';
@@ -1323,6 +1323,88 @@ export async function initWebUI(
       log.warn('clear background image failed: %s', err instanceof Error ? err.message : String(err));
       return c.json({ success: false, message: '删除图片失败' }, 500);
     }
+  });
+
+  // ─── Large video upload ────────────────────────────────────────────────────
+  const largeVideoTasks = new Map();
+
+  function generateTaskId() {
+    return randomBytes(8).toString('hex');
+  }
+
+  app.post('/api/large-video/send', async (c) => {
+    try {
+      const { input, group } = await c.req.json();
+      if (!input || !group) {
+        return c.json({ success: false, message: '缺少必填参数: input, group' }, 400);
+      }
+
+      // resolve paths for both dev (tsx) and production (bundled dist/)
+      const scriptPathProd = path.resolve(__dirname, '../tools/send-large-video.mjs');
+      const scriptPathDev = path.resolve(__dirname, '../../../tools/send-large-video.mjs');
+      const scriptPath = existsSync(scriptPathProd) ? scriptPathProd : scriptPathDev;
+      if (!existsSync(scriptPath)) {
+        return c.json({ success: false, message: 'tools/send-large-video.mjs 未找到' }, 500);
+      }
+
+      const cwdProd = path.resolve(__dirname, '..');
+      const cwdDev = path.resolve(__dirname, '../../../../');
+      const projectRoot = existsSync(scriptPathProd) ? cwdProd : cwdDev;
+
+      const taskId = generateTaskId();
+      const proc = spawn('node', [scriptPath, '--input', input, '--group', String(group)], {
+        cwd: projectRoot,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 3_600_000,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+      proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+
+      const task = {
+        id: taskId,
+        pid: proc.pid,
+        startedAt: Date.now(),
+        running: true,
+        stdout,
+        stderr,
+        exitCode: null,
+        proc,
+      };
+      largeVideoTasks.set(taskId, task);
+
+      proc.on('close', (code) => {
+        task.running = false;
+        task.exitCode = code;
+        task.stdout = stdout;
+        task.stderr = stderr;
+      });
+
+      log.info('large-video task %s started (pid=%d, input=%s, group=%s)', taskId, proc.pid, input, group);
+      return c.json({ success: true, taskId });
+    } catch (err) {
+      log.warn('large-video/send failed: %s', err instanceof Error ? err.message : String(err));
+      return c.json({ success: false, message: '启动任务失败' }, 500);
+    }
+  });
+
+  app.get('/api/large-video/task/:id', (c) => {
+    const task = largeVideoTasks.get(c.req.param('id'));
+    if (!task) return c.json({ success: false, message: '任务不存在' }, 404);
+    return c.json({
+      success: true,
+      task: {
+        id: task.id,
+        pid: task.pid,
+        startedAt: task.startedAt,
+        running: task.running,
+        stdout: task.stdout,
+        stderr: task.stderr,
+        exitCode: task.exitCode,
+      },
+    });
   });
 
   // ─── Static frontend ─────────────────────────────────────────────────────
