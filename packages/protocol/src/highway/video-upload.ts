@@ -32,8 +32,27 @@ export const PRIVATE_VIDEO_THUMB_CMD_ID = 1002;
 export const GROUP_VIDEO_CMD_ID = 1005;
 export const GROUP_VIDEO_THUMB_CMD_ID = 1006;
 
-const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
+export const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
 const SHA1_STREAM_BLOCK_SIZE = 1024 * 1024;
+
+export function getVideoSourceSize(element: MessageElement): number | null {
+  if (element.fileSize && element.fileSize > 0) return element.fileSize;
+  const source = element.url || element.fileId || '';
+  if (!source) return null;
+  const local = resolveLocalFilePath(source);
+  if (local && fs.existsSync(local)) {
+    return fs.statSync(local).size;
+  }
+  return null;
+}
+
+export async function getVideoDuration(filePath: string): Promise<number> {
+  const addon = getFFmpegAddon();
+  const info = await addon.getVideoInfo(filePath);
+  const dur = Math.round(info.duration || 0);
+  if (dur <= 0) throw new Error('unable to determine video duration');
+  return dur;
+}
 
 const FALLBACK_THUMB = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
