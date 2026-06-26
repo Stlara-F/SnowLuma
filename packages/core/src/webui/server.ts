@@ -1334,9 +1334,12 @@ export async function initWebUI(
 
   app.post('/api/large-video/send', async (c) => {
     try {
-      const { input, group } = await c.req.json();
-      if (!input || !group) {
-        return c.json({ success: false, message: '缺少必填参数: input, group' }, 400);
+      const { input, group, user } = await c.req.json();
+      if (!input || (!group && !user)) {
+        return c.json({ success: false, message: '缺少必填参数: input, 以及 group 或 user' }, 400);
+      }
+      if (group && user) {
+        return c.json({ success: false, message: 'group 和 user 不能同时提供' }, 400);
       }
 
       // resolve paths for both dev (tsx) and production (bundled dist/)
@@ -1350,8 +1353,9 @@ export async function initWebUI(
 
       const projectRoot = existsSync(scriptPathProd) ? path.resolve(__dirname, '..') : projectRootDev;
 
+      const targetArg = group ? ['--group', String(group)] : ['--user', String(user)];
       const taskId = generateTaskId();
-      const proc = spawn(process.execPath, [scriptPath, '--input', input, '--group', String(group)], {
+      const proc = spawn(process.execPath, [scriptPath, '--input', input, ...targetArg], {
         cwd: projectRoot,
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 7_200_000,
@@ -1396,7 +1400,8 @@ export async function initWebUI(
         task.finishedAt = Date.now();
       });
 
-      log.info('large-video task %s started (pid=%d, input=%s, group=%s)', taskId, proc.pid, input, group);
+      const targetLabel = group ? `group=${group}` : `user=${user}`;
+      log.info('large-video task %s started (pid=%d, input=%s, %s)', taskId, proc.pid, input, targetLabel);
       return c.json({ success: true, taskId });
     } catch (err) {
       log.warn('large-video/send failed: %s', err instanceof Error ? err.message : String(err));

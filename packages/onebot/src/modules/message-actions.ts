@@ -1,6 +1,12 @@
+import { existsSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import { createLogger } from '@snowluma/common/logger';
 import type { BridgeInterface } from '@snowluma/core/bridge-interface';
 import type { ForwardNodePayload, FriendMessage, GroupMessage, MessageElement, QQEventVariant } from '@snowluma/protocol/events';
+import { isFfmpegAvailable, probeDuration, splitVideo, cleanupTempDir } from '@snowluma/protocol/highway/ffmpeg-cli';
+import { resolveLocalFilePath } from '@snowluma/protocol/highway/utils';
+import { getVideoSourceSize, MAX_VIDEO_SIZE } from '@snowluma/protocol/highway/video-upload';
 import type { MessageSendResult } from '../api-handler';
 import { convertEvent, elementsToOneBotSegments, type ConverterContext } from '../event-converter';
 import { segmentsToRawMessage } from '../helper/cq';
@@ -448,6 +454,71 @@ async function cacheSelfSentMessage(
   }
 }
 
+/**
+ * Pre-process message elements: detect oversized video elements and either
+ * split them into ≤95 MB segments (via ffmpeg) or fall back to file upload
+ * when ffmpeg is unavailable. Returns the elements that should go through
+ * the normal send pipeline as-is, plus any split-video segment groups that
+ * should be sent as separate messages, and the list of temp directories to
+ * clean up after all sends complete.
+ */
+async function preprocessLargeVideos(
+  elements: MessageElement[],
+  _isGroup: boolean,
+): Promise<{
+  normalElements: MessageElement[];
+  splitVideoMessages: MessageElement[][];
+  tempDirs: string[];
+}> {
+  const normalElements: MessageElement[] = [];
+  const splitVideoMessages: MessageElement[][] = [];
+  const tempDirs: string[] = [];
+
+  for (const el of elements) {
+    if (el.type !== 'video') {
+      normalElements.push(el);
+      continue;
+    }
+
+    const sourceSize = getVideoSourceSize(el);
+    if (sourceSize === null || sourceSize <= MAX_VIDEO_SIZE) {
+      normalElements.push(el);
+      continue;
+    }
+
+    const source = el.url || el.fileId || '';
+    if (!source) { normalElements.push(el); continue; }
+
+    const local = resolveLocalFilePath(source);
+    if (!local || !existsSync(local)) {
+      normalElements.push({ type: 'file', url: el.url, fileName: el.fileName || 'video.mp4' });
+      continue;
+    }
+
+    if (isFfmpegAvailable()) {
+      try {
+        const duration = await probeDuration(local);
+        const tempDir = mkdtempSync(path.join(tmpdir(), 'sl-core-'));
+        tempDirs.push(tempDir);
+
+        const segments = await splitVideo(local, tempDir, sourceSize, duration);
+        for (const seg of segments) {
+          splitVideoMessages.push([
+            { type: 'video', url: seg.path, fileName: seg.name, fileSize: seg.size },
+          ]);
+        }
+        continue;
+      } catch (err) {
+        log.warn('video split failed (%s), falling back to file upload', err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    normalElements.push({ type: 'file', url: el.url, fileName: el.fileName || 'video.mp4' });
+  }
+
+  return { normalElements, splitVideoMessages, tempDirs };
+}
+
 export async function sendPrivateMessage(
   ref: OneBotInstanceContext,
   userId: number,
@@ -512,8 +583,11 @@ export async function sendPrivateMessage(
   // Two sub-paths:
   //  a) has url/path but no file_id → uploadPrivate() which internally calls sendC2cFile()
   //  b) has file_id from a prior upload_private_file → sendC2cFile() only
-  const allFileElements = elements.filter(e => e.type === 'file');
-  const nonFileElements = elements.filter(e => e.type !== 'file');
+  // Preprocess large videos: split with ffmpeg or fall back to file upload
+  const { normalElements, splitVideoMessages, tempDirs } = await preprocessLargeVideos(elements, false);
+
+  const allFileElements = normalElements.filter(e => e.type === 'file');
+  const nonFileElements = normalElements.filter(e => e.type !== 'file');
 
   let lastReceipt: Awaited<ReturnType<typeof ref.bridge.apis.message.sendPrivate>> | undefined;
   if (nonFileElements.length > 0) {
@@ -526,7 +600,7 @@ export async function sendPrivateMessage(
     for (const fileEl of allFileElements) {
       if (fileEl.url && !fileEl.fileId) {
         // uploadPrivate() already calls sendC2cFile() internally — do NOT call it again.
-        const name = fileEl.fileName || fileEl.url.split('/').pop() || 'file';
+        const name = fileEl.fileName || path.basename(fileEl.url) || 'file';
         await ref.bridge.apis.groupFile.uploadPrivate(userId, fileEl.url, name, true);
         logSentMessage(false, userId, [fileEl]);
         if (!lastReceipt) {
@@ -545,6 +619,20 @@ export async function sendPrivateMessage(
       }
     }
   }
+
+  // Send split video segments as individual messages (each ≤95 MB, fits in NTV2)
+  for (const segElements of splitVideoMessages) {
+    try {
+      lastReceipt = await ref.bridge.apis.message.sendPrivate(userId, segElements);
+      logSentMessage(false, userId, segElements);
+    } catch (err) {
+      log.warn('video segment send failed (%s), continuing with remaining segments', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Clean up temp directories from ffmpeg splitting
+  for (const dir of tempDirs) cleanupTempDir(dir);
+
   if (!lastReceipt) throw new Error('message is empty');
 
   const messageId = hashMessageIdInt32(lastReceipt.sequence, userId, PRIVATE_MESSAGE_EVENT);
@@ -599,11 +687,14 @@ export async function sendGroupMessage(
   });
   if (elements.length === 0) throw new Error('message is empty');
 
+  // Preprocess large videos: split with ffmpeg or fall back to file upload
+  const { normalElements, splitVideoMessages, tempDirs } = await preprocessLargeVideos(elements, true);
+
   // Two sub-paths for group file segments:
   //  a) has url/path but no file_id → upload() which internally calls publish()
   //  b) has file_id from a prior upload_group_file → publish() only
-  const allFileElements = elements.filter(e => e.type === 'file');
-  const nonFileElements = elements.filter(e => e.type !== 'file');
+  const allFileElements = normalElements.filter(e => e.type === 'file');
+  const nonFileElements = normalElements.filter(e => e.type !== 'file');
 
   let lastReceipt: Awaited<ReturnType<typeof ref.bridge.apis.message.sendGroup>> | undefined;
   if (nonFileElements.length > 0) {
@@ -614,7 +705,7 @@ export async function sendGroupMessage(
     let fileId: string;
     if (fileEl.url && !fileEl.fileId) {
       // upload() already calls publish() internally — do NOT call publish() again.
-      const name = fileEl.fileName || fileEl.url.split('/').pop() || 'file';
+      const name = fileEl.fileName || path.basename(fileEl.url) || 'file';
       const result = await ref.bridge.apis.groupFile.upload(groupId, fileEl.url, name, '/', true);
       fileId = result.fileId ?? '';
       if (!fileId) { log.warn('[OneBot] group file auto-upload returned no file_id — skipped'); continue; }
@@ -632,6 +723,20 @@ export async function sendGroupMessage(
       lastReceipt = { messageId: 0, sequence: h & 0x7FFFFFFF, clientSequence: 0, random: h & 0x7FFFFFFF, timestamp: Math.floor(Date.now() / 1000) };
     }
   }
+
+  // Send split video segments as individual messages (each ≤95 MB, fits in NTV2)
+  for (const segElements of splitVideoMessages) {
+    try {
+      lastReceipt = await ref.bridge.apis.message.sendGroup(groupId, segElements);
+      logSentMessage(true, groupId, segElements);
+    } catch (err) {
+      log.warn('video segment send failed (%s), continuing with remaining segments', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Clean up temp directories from ffmpeg splitting
+  for (const dir of tempDirs) cleanupTempDir(dir);
+
   if (!lastReceipt) throw new Error('message is empty');
 
   const messageId = hashMessageIdInt32(lastReceipt.sequence, groupId, GROUP_MESSAGE_EVENT);

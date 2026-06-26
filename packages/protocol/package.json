@@ -456,6 +456,10 @@
       "types": "./src/highway/ffmpeg-addon.ts",
       "default": "./src/highway/ffmpeg-addon.ts"
     },
+    "./highway/ffmpeg-cli": {
+      "types": "./src/highway/ffmpeg-cli.ts",
+      "default": "./src/highway/ffmpeg-cli.ts"
+    },
     "./web/group-album": {
       "types": "./src/web/group-album.ts",
       "default": "./src/web/group-album.ts"

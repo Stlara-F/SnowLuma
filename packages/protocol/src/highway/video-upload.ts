@@ -32,8 +32,39 @@ export const PRIVATE_VIDEO_THUMB_CMD_ID = 1002;
 export const GROUP_VIDEO_CMD_ID = 1005;
 export const GROUP_VIDEO_THUMB_CMD_ID = 1006;
 
-const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
+export const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
 const SHA1_STREAM_BLOCK_SIZE = 1024 * 1024;
+
+/**
+ * Check if a video element's source exceeds MAX_VIDEO_SIZE without fully
+ * downloading it. Returns `true` when the size is known and oversize,
+ * `false` when known and safe, and `null` when the size cannot be
+ * determined (remote URL, no fileSize metadata).
+ */
+export function getVideoSourceSize(element: MessageElement): number | null {
+  if (element.fileSize && element.fileSize > 0) return element.fileSize;
+  const source = element.url || element.fileId || '';
+  if (!source) return null;
+  const local = resolveLocalFilePath(source);
+  if (local && fs.existsSync(local)) {
+    return fs.statSync(local).size;
+  }
+  return null;
+}
+
+/**
+ * Get video duration in seconds using the native ffmpeg addon.
+ * Returns 1 as fallback on error.
+ */
+export async function getVideoDuration(filePath: string): Promise<number> {
+  try {
+    const addon = getFFmpegAddon();
+    const info = await addon.getVideoInfo(filePath);
+    return Math.max(1, Math.round(info.duration || 0));
+  } catch {
+    return 1;
+  }
+}
 
 const FALLBACK_THUMB = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',

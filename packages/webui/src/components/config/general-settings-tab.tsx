@@ -117,7 +117,8 @@ const TOKEN_KEY = 'snowluma_token';
 
 function LargeVideoSection() {
   const [videoPath, setVideoPath] = useState('');
-  const [groupId, setGroupId] = useState('');
+  const [targetId, setTargetId] = useState('');
+  const [isGroup, setIsGroup] = useState(true);
   const [running, setRunning] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stdout, setStdout] = useState('');
@@ -169,15 +170,18 @@ function LargeVideoSection() {
   }, [token, stopPolling]);
 
   const handleSend = async () => {
-    if (starting || hasRunningTask || !videoPath.trim() || !groupId.trim()) return;
+    if (starting || hasRunningTask || !videoPath.trim() || !targetId.trim()) return;
     setStarting(true);
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      const body: Record<string, unknown> = { input: videoPath.trim() };
+      if (isGroup) body.group = Number(targetId);
+      else body.user = Number(targetId);
       const res = await fetch('/api/large-video/send', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ input: videoPath.trim(), group: Number(groupId) }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.success && data.taskId) {
@@ -198,12 +202,13 @@ function LargeVideoSection() {
 
   const isDone = exitCode !== null;
   const hasRunningTask = running && !isDone;
+  const targetPlaceholder = isGroup ? '目标群号' : '目标 QQ 号';
 
   return (
     <div className="rounded-lg border bg-card/40 p-4">
       <Label>大视频上传</Label>
       <p className="mt-1 mb-3 text-[11px] leading-relaxed text-muted-foreground">
-        将大于 95MB 的视频分割为多个 ≤95MB 的分段，通过 OneBot HTTP API 串行发送到目标群聊。
+        将大于 95MB 的视频分割为多个 ≤95MB 的分段，通过 OneBot HTTP API 串行发送。
         需要系统中已安装 ffmpeg + ffprobe。
       </p>
 
@@ -211,25 +216,36 @@ function LargeVideoSection() {
         <Label htmlFor="large-video-path">视频文件路径</Label>
         <Input
           id="large-video-path"
-          placeholder="视频文件完整路径，如 D:\videos\demo.mp4"
+          placeholder="视频文件完整路径，如 D:\videos\demo.mp4（Windows）或 /home/user/demo.mp4（Linux）"
           value={videoPath}
           disabled={hasRunningTask}
           onChange={(e) => setVideoPath(e.target.value)}
         />
+        <div className="flex items-center gap-3">
+          <Label className="text-xs">发送到</Label>
+          <label className="flex items-center gap-1 text-xs">
+            <input type="radio" checked={isGroup} onChange={() => setIsGroup(true)} disabled={hasRunningTask} />
+            群聊
+          </label>
+          <label className="flex items-center gap-1 text-xs">
+            <input type="radio" checked={!isGroup} onChange={() => setIsGroup(false)} disabled={hasRunningTask} />
+            私聊
+          </label>
+        </div>
         <div className="flex gap-2">
-          <Label htmlFor="large-video-group" className="sr-only">目标群号</Label>
+          <Label htmlFor="large-video-target" className="sr-only">{targetPlaceholder}</Label>
           <Input
-            id="large-video-group"
+            id="large-video-target"
             type="number"
             className="w-40 tabular-nums"
-            placeholder="目标群号"
-            value={groupId}
+            placeholder={targetPlaceholder}
+            value={targetId}
             disabled={hasRunningTask}
-            onChange={(e) => setGroupId(e.target.value)}
+            onChange={(e) => setTargetId(e.target.value)}
           />
           <Button
             className="shrink-0"
-            disabled={starting || hasRunningTask || !videoPath.trim() || !groupId.trim()}
+            disabled={starting || hasRunningTask || !videoPath.trim() || !targetId.trim()}
             onClick={handleSend}
           >
             {starting ? '启动中...' : hasRunningTask ? '上传中...' : '上传'}

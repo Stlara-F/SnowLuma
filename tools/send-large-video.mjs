@@ -217,13 +217,15 @@ function splitSegment(inputPath, outputPath, start, duration) {
 
 // ──────────── Step 5: 通过 OneBot HTTP API 发送 ────────────
 
-async function sendSegment(apiBase, token, groupId, filePath, fileName, isRetry) {
-  const url = `${apiBase}/send_group_msg`;
+async function sendSegment(apiBase, token, target, targetIsGroup, filePath, fileName, isRetry) {
+  const endpoint = targetIsGroup ? 'send_group_msg' : 'send_private_msg';
+  const url = `${apiBase}/${endpoint}`;
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
+  const targetKey = targetIsGroup ? 'group_id' : 'user_id';
   const body = JSON.stringify({
-    group_id: groupId,
+    [targetKey]: target,
     message: [{
       type: 'video',
       data: { file: filePath, fileName },
@@ -231,7 +233,7 @@ async function sendSegment(apiBase, token, groupId, filePath, fileName, isRetry)
   });
 
   const label = isRetry ? `[第${isRetry}次重试]` : '[首次发送]';
-  log('INFO', `  → ${label} ${fileName}`);
+  log('INFO', `  → ${label} ${fileName} (${targetIsGroup ? '群聊' : '私聊'})`);
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -273,31 +275,35 @@ async function main() {
 
   const inputPath = args.input || args.i;
   const groupId = args.group || args.g;
+  const userId = args.user || args.u;
   const configDir = args['config-dir'] || path.join(process.cwd(), 'config');
   const apiBaseOverride = args['api-base'];
 
   const errs = [];
   if (!inputPath) errs.push('--input <视频路径> 必填');
-  if (!groupId) errs.push('--group <群号> 必填');
+  if (!groupId && !userId) errs.push('--group <群号> 或 --user <QQ号> 必填其一');
+  if (groupId && userId) errs.push('--group 和 --user 不能同时使用');
   if (errs.length > 0) {
     console.log('用法: node tools/send-large-video.mjs --input <视频路径> --group <群号>');
+    console.log('       node tools/send-large-video.mjs --input <视频路径> --user <QQ号>');
     console.log('                 [--api-base <http://host:port>] [--config-dir <配置目录>]');
     errs.forEach(e => console.log(`  错误: ${e}`));
     process.exit(1);
   }
 
-  const absInput = path.resolve(inputPath);
-  const groupNum = Number(groupId);
-  if (!Number.isSafeInteger(groupNum) || groupNum <= 0) {
-    log('ERROR', `群号无效: ${groupId}`);
+  const targetIsGroup = !!groupId;
+  const targetNum = targetIsGroup ? Number(groupId) : Number(userId);
+  if (!Number.isSafeInteger(targetNum) || targetNum <= 0) {
+    log('ERROR', `${targetIsGroup ? '群' : 'QQ'}号无效: ${targetIsGroup ? groupId : userId}`);
     process.exit(1);
   }
 
+  const absInput = path.resolve(inputPath);
   log('INFO', '═══════════════════════════════════════');
   log('INFO', '  大视频分割上传工具');
   log('INFO', '═══════════════════════════════════════');
   log('INFO', `输入: ${absInput}`);
-  log('INFO', `目标群: ${groupNum}`);
+  log('INFO', `目标${targetIsGroup ? '群' : '私聊'}: ${targetNum}`);
 
   // ── 检查工具 ──
   if (!checkTool('ffprobe')) {
@@ -375,7 +381,7 @@ async function main() {
     let lastError = null;
     for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
       try {
-        await sendSegment(apiBase, token, groupNum, absInput, fileName, attempt);
+        await sendSegment(apiBase, token, targetNum, targetIsGroup, absInput, fileName, attempt);
         log('INFO', '');
         log('INFO', '✓ 发送完成');
         lastError = null;
@@ -435,7 +441,7 @@ async function main() {
 
       for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
         try {
-          const msgId = await sendSegment(apiBase, token, groupNum, file.path, file.name, attempt);
+          const msgId = await sendSegment(apiBase, token, targetNum, targetIsGroup, file.path, file.name, attempt);
           results.push({ index: i, fileName: file.name, messageId: msgId, success: true });
           success = true;
           break;
