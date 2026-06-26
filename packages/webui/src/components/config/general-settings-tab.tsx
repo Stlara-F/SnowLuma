@@ -119,6 +119,7 @@ function LargeVideoSection() {
   const [videoPath, setVideoPath] = useState('');
   const [groupId, setGroupId] = useState('');
   const [running, setRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [stdout, setStdout] = useState('');
   const [stderr, setStderr] = useState('');
   const [exitCode, setExitCode] = useState<number | null>(null);
@@ -142,21 +143,34 @@ function LargeVideoSection() {
         const headers: Record<string, string> = {};
         if (token) headers['Authorization'] = `Bearer ${token}`;
         const res = await fetch(`/api/large-video/task/${id}`, { headers });
-        if (!res.ok) return;
+        if (!res.ok) {
+          setRunning(false);
+          setStderr(res.status === 401 ? '登录已过期，请重新登录' : `查询任务失败：HTTP ${res.status}`);
+          stopPolling();
+          return;
+        }
         const data = await res.json();
-        if (!data.success) return;
+        if (!data.success) {
+          setRunning(false);
+          setStderr('查询任务失败');
+          stopPolling();
+          return;
+        }
         const t = data.task;
         setStdout(t.stdout || '');
         setStderr(t.stderr || '');
         setExitCode(t.exitCode);
         setRunning(t.running);
         if (!t.running) stopPolling();
-      } catch { /* poll retry */ }
+      } catch {
+        // 网络错误时继续轮询，不改变 UI 状态
+      }
     }, 1000);
   }, [token, stopPolling]);
 
   const handleSend = async () => {
-    if (!videoPath.trim() || !groupId.trim()) return;
+    if (starting || hasRunningTask || !videoPath.trim() || !groupId.trim()) return;
+    setStarting(true);
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -177,6 +191,8 @@ function LargeVideoSection() {
       }
     } catch (err) {
       setStderr(err instanceof Error ? err.message : '网络错误');
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -192,14 +208,18 @@ function LargeVideoSection() {
       </p>
 
       <div className="flex flex-col gap-2">
+        <Label htmlFor="large-video-path">视频文件路径</Label>
         <Input
+          id="large-video-path"
           placeholder="视频文件完整路径，如 D:\videos\demo.mp4"
           value={videoPath}
           disabled={hasRunningTask}
           onChange={(e) => setVideoPath(e.target.value)}
         />
         <div className="flex gap-2">
+          <Label htmlFor="large-video-group" className="sr-only">目标群号</Label>
           <Input
+            id="large-video-group"
             type="number"
             className="w-40 tabular-nums"
             placeholder="目标群号"
@@ -209,10 +229,10 @@ function LargeVideoSection() {
           />
           <Button
             className="shrink-0"
-            disabled={hasRunningTask || !videoPath.trim() || !groupId.trim()}
+            disabled={starting || hasRunningTask || !videoPath.trim() || !groupId.trim()}
             onClick={handleSend}
           >
-            {hasRunningTask ? '上传中...' : '上传'}
+            {starting ? '启动中...' : hasRunningTask ? '上传中...' : '上传'}
           </Button>
         </div>
       </div>

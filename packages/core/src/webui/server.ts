@@ -1341,15 +1341,14 @@ export async function initWebUI(
 
       // resolve paths for both dev (tsx) and production (bundled dist/)
       const scriptPathProd = path.resolve(__dirname, '../tools/send-large-video.mjs');
-      const scriptPathDev = path.resolve(__dirname, '../../../tools/send-large-video.mjs');
+      const projectRootDev = path.resolve(__dirname, '../../../../');
+      const scriptPathDev = path.join(projectRootDev, 'tools/send-large-video.mjs');
       const scriptPath = existsSync(scriptPathProd) ? scriptPathProd : scriptPathDev;
       if (!existsSync(scriptPath)) {
         return c.json({ success: false, message: 'tools/send-large-video.mjs 未找到' }, 500);
       }
 
-      const cwdProd = path.resolve(__dirname, '..');
-      const cwdDev = path.resolve(__dirname, '../../../../');
-      const projectRoot = existsSync(scriptPathProd) ? cwdProd : cwdDev;
+      const projectRoot = existsSync(scriptPathProd) ? path.resolve(__dirname, '..') : projectRootDev;
 
       const taskId = generateTaskId();
       const proc = spawn(process.execPath, [scriptPath, '--input', input, '--group', String(group)], {
@@ -1360,7 +1359,7 @@ export async function initWebUI(
 
       const task: {
         id: string; pid: number | undefined; startedAt: number; running: boolean;
-        stdout: string; stderr: string; exitCode: number | null; proc: typeof proc;
+        stdout: string; stderr: string; exitCode: number | null; signal: string | null; proc: typeof proc;
       } = {
         id: taskId,
         pid: proc.pid,
@@ -1369,6 +1368,7 @@ export async function initWebUI(
         stdout: '',
         stderr: '',
         exitCode: null,
+        signal: null,
         proc,
       };
       largeVideoTasks.set(taskId, task);
@@ -1376,9 +1376,17 @@ export async function initWebUI(
       proc.stdout.on('data', (chunk) => { task.stdout += chunk.toString(); });
       proc.stderr.on('data', (chunk) => { task.stderr += chunk.toString(); });
 
-      proc.on('close', (code) => {
+      proc.on('error', (err) => {
+        task.stderr += `进程启动失败: ${err.message}\n`;
+        task.running = false;
+        task.exitCode = -1;
+        log.warn('large-video task %s error: %s', taskId, err.message);
+      });
+
+      proc.on('close', (code, signal) => {
         task.running = false;
         task.exitCode = code;
+        task.signal = signal;
       });
 
       log.info('large-video task %s started (pid=%d, input=%s, group=%s)', taskId, proc.pid, input, group);
@@ -1402,6 +1410,7 @@ export async function initWebUI(
         stdout: task.stdout,
         stderr: task.stderr,
         exitCode: task.exitCode,
+        signal: task.signal,
       },
     });
   });

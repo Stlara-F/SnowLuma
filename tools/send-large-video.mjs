@@ -152,10 +152,13 @@ function probeVideo(inputPath) {
 // ──────────── Step 3: 计算分片参数 ────────────
 
 function calculateSegments(totalSize, totalDuration) {
-  const minSegments = Math.ceil(totalSize / MAX_BYTES_PER_SEGMENT);
-  const numSegments = Math.min(minSegments, MAX_SEGMENTS);
+  const numSegments = Math.ceil(totalSize / MAX_BYTES_PER_SEGMENT);
 
-  log('INFO', `  所需最少分段: ${minSegments}, 实际分段: ${numSegments}`);
+  log('INFO', `  所需最少分段: ${numSegments}`);
+
+  if (numSegments > MAX_SEGMENTS) {
+    log('WARN', `  ⚠ 预计需要 ${numSegments} 段，超过建议上限 ${MAX_SEGMENTS}，将继续尝试`);
+  }
 
   if (numSegments <= 1) {
     return [{ index: 0, start: 0, duration: totalDuration }];
@@ -243,7 +246,7 @@ async function sendSegment(apiBase, token, groupId, filePath, fileName, isRetry)
 
   const result = await resp.json();
 
-  if (result?.status === 'ok' || result?.retcode === 0) {
+  if (result?.status === 'ok' && result?.retcode === 0) {
     const msgId = result?.data?.message_id ?? '?';
     log('INFO', `  ✓ ${label} ${fileName} → message_id=${msgId}`);
     return msgId;
@@ -284,6 +287,10 @@ async function main() {
 
   const absInput = path.resolve(inputPath);
   const groupNum = Number(groupId);
+  if (!Number.isSafeInteger(groupNum) || groupNum <= 0) {
+    log('ERROR', `群号无效: ${groupId}`);
+    process.exit(1);
+  }
 
   log('INFO', '═══════════════════════════════════════');
   log('INFO', '  大视频分割上传工具');
@@ -364,13 +371,26 @@ async function main() {
   if (videoInfo.size <= MAX_BYTES_PER_SEGMENT) {
     log('INFO', '视频 ≤ 95MB，直接发送...');
     const fileName = `${baseName}_${ts}${ext}`;
-    try {
-      await sendSegment(apiBase, token, groupNum, absInput, fileName, 0);
-      log('INFO', '');
-      log('INFO', '✓ 发送完成');
-    } catch (err) {
-      const known = matchKnownError(err.message);
-      log('ERROR', `发送失败: ${known || err.message}`);
+    let lastError = null;
+    for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
+      try {
+        await sendSegment(apiBase, token, groupNum, absInput, fileName, attempt);
+        log('INFO', '');
+        log('INFO', '✓ 发送完成');
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt < RETRY_COUNT) {
+          log('WARN', `  发送失败: ${matchKnownError(err.message) || err.message}`);
+          log('WARN', `    ${RETRY_INTERVAL_MS / 1000}s 后重试...`);
+          await new Promise(r => setTimeout(r, RETRY_INTERVAL_MS));
+        }
+      }
+    }
+    if (lastError) {
+      const known = matchKnownError(lastError.message);
+      log('ERROR', `发送失败: ${known || lastError.message}`);
       process.exit(1);
     }
     return;
@@ -378,19 +398,6 @@ async function main() {
 
   // ── 计算分片 ──
   const segments = calculateSegments(videoInfo.size, videoInfo.duration);
-
-  if (segments.length > MAX_SEGMENTS) {
-    log('ERROR', `视频过大：预计需要 ${segments.length} 段，超过上限 ${MAX_SEGMENTS}。`);
-    log('ERROR', `  当前大小: ${formatBytes(videoInfo.size)}，建议先压缩视频再试`);
-    process.exit(1);
-  }
-
-  // 预检单段是否可能超过 100MB（码率极端不均的情况）
-  if (videoInfo.size > MAX_SEGMENTS * 100 * 1024 * 1024) {
-    log('ERROR', `视频总大小 ${formatBytes(videoInfo.size)} 超过 ${MAX_SEGMENTS}×100MB 限制，无法保证每段 <100MB。`);
-    log('ERROR', '建议: 压缩视频降低码率');
-    process.exit(1);
-  }
 
   // ── 创建临时目录 ──
   const tempDir = mkdtempSync(path.join(tmpdir(), 'sl-video-'));
@@ -409,8 +416,8 @@ async function main() {
       log('INFO', `    段 ${seg.index + 1}: start=${seg.start.toFixed(1)}s, 时长=${seg.duration.toFixed(1)}s, 输出=${segFileName}`);
       const realSize = await splitSegment(absInput, segPath, seg.start, seg.duration);
       log('INFO', `    ✓ 段 ${seg.index + 1} 分割完成, 大小=${formatBytes(realSize)}`);
-      if (realSize > 100 * 1024 * 1024) {
-        log('WARN', `    ⚠ 段 ${seg.index + 1} 超过 100MB (${formatBytes(realSize)})，可能会被 SnowLuma 拒绝`);
+      if (realSize > MAX_BYTES_PER_SEGMENT) {
+        log('WARN', `    ⚠ 段 ${seg.index + 1} 超过 ${formatBytes(MAX_BYTES_PER_SEGMENT)} (${formatBytes(realSize)})，可能会被 SnowLuma 拒绝`);
       }
       segmentFiles.push({ path: segPath, name: segFileName });
     }
