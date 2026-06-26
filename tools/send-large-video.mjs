@@ -72,6 +72,7 @@ function log(level, msg, ...args) {
 // ──────────── 工具函数 ────────────
 
 function checkTool(name) {
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) return false;
   try {
     const result = spawnSync(name, ['-version'], { stdio: 'pipe', timeout: 10_000 });
     return result.status === 0;

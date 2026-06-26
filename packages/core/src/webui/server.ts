@@ -1354,16 +1354,17 @@ export async function initWebUI(
       const proc = spawn(process.execPath, [scriptPath, '--input', input, '--group', String(group)], {
         cwd: projectRoot,
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 3_600_000,
+        timeout: 7_200_000,
       });
 
       const task: {
-        id: string; pid: number | undefined; startedAt: number; running: boolean;
+        id: string; pid: number | undefined; startedAt: number; finishedAt: number | null; running: boolean;
         stdout: string; stderr: string; exitCode: number | null; signal: string | null; proc: typeof proc;
       } = {
         id: taskId,
         pid: proc.pid,
         startedAt: Date.now(),
+        finishedAt: null,
         running: true,
         stdout: '',
         stderr: '',
@@ -1373,8 +1374,13 @@ export async function initWebUI(
       };
       largeVideoTasks.set(taskId, task);
 
-      proc.stdout.on('data', (chunk) => { task.stdout += chunk.toString(); });
-      proc.stderr.on('data', (chunk) => { task.stderr += chunk.toString(); });
+      const MAX_TASK_OUTPUT_CHARS = 256 * 1024;
+      const appendTaskOutput = (current: string, chunk: Buffer) => {
+        const next = current + chunk.toString();
+        return next.length > MAX_TASK_OUTPUT_CHARS ? next.slice(-MAX_TASK_OUTPUT_CHARS) : next;
+      };
+      proc.stdout.on('data', (chunk) => { task.stdout = appendTaskOutput(task.stdout, chunk); });
+      proc.stderr.on('data', (chunk) => { task.stderr = appendTaskOutput(task.stderr, chunk); });
 
       proc.on('error', (err) => {
         task.stderr += `进程启动失败: ${err.message}\n`;
@@ -1387,6 +1393,7 @@ export async function initWebUI(
         task.running = false;
         task.exitCode = code;
         task.signal = signal;
+        task.finishedAt = Date.now();
       });
 
       log.info('large-video task %s started (pid=%d, input=%s, group=%s)', taskId, proc.pid, input, group);
@@ -1420,7 +1427,7 @@ export async function initWebUI(
   const taskCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, t] of largeVideoTasks) {
-      if (!t.running && now - t.startedAt > TASK_TTL_MS) {
+      if (!t.running && t.finishedAt !== null && now - t.finishedAt > TASK_TTL_MS) {
         largeVideoTasks.delete(id);
         log.info('large-video task %s cleaned up after TTL', id);
       }
