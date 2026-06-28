@@ -94,7 +94,14 @@ export function VncViewPage() {
 
       <VncPasswordDialog
         open={passwordDialogOpen}
-        onOpenChange={(o) => { setPasswordDialogOpen(o); if (!o) setPendingPassword(false); }}
+        onOpenChange={(o) => {
+          setPasswordDialogOpen(o);
+          if (!o) {
+            setPendingPassword(false);
+            viewerRef.current?.disconnect();
+            setConnStatus('disconnected');
+          }
+        }}
         onConfirm={(password) => {
           viewerRef.current?.sendCredentials({ password });
           setPasswordDialogOpen(false);

@@ -3,6 +3,7 @@ import RFB from '@novnc/novnc';
 
 export interface VncViewerHandle {
   sendCredentials: (creds: { password: string }) => void;
+  disconnect: () => void;
 }
 
 interface VncViewerProps {
@@ -86,7 +87,12 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
       rfbRef.current?.sendCredentials({ username: '', password: creds.password, target: '' });
     }, []);
 
-    useImperativeHandle(ref, () => ({ sendCredentials }), [sendCredentials]);
+    const disconnect = useCallback(() => {
+      rfbRef.current?.disconnect();
+      rfbRef.current = null;
+    }, []);
+
+    useImperativeHandle(ref, () => ({ sendCredentials, disconnect }), [sendCredentials, disconnect]);
 
     return <div ref={containerRef} className="w-full h-full rounded-lg overflow-hidden bg-black" />;
   }
