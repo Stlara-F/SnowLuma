@@ -94,8 +94,33 @@ export const settingsRoute = createRoute({
   ),
 });
 
+/** VNC view route — full-bleed remote desktop viewer. */
+interface VncViewSearch {
+  hostname?: string;
+  port?: number;
+  protocol?: 'ws' | 'wss';
+  processName?: string;
+}
+
+const vncViewRoute = createRoute({
+  path: '/processes/vnc/$pid',
+  getParentRoute: () => appLayoutRoute,
+  validateSearch: (search: Record<string, unknown>): VncViewSearch => {
+    const hostname = typeof search.hostname === 'string' ? search.hostname : undefined;
+    const portRaw = typeof search.port === 'string' ? parseInt(search.port) : undefined;
+    const port = portRaw && !isNaN(portRaw) ? portRaw : undefined;
+    const protocol = search.protocol === 'wss' ? 'wss' : undefined;
+    const processName = typeof search.processName === 'string' ? search.processName : undefined;
+    return { hostname, port, protocol, processName };
+  },
+  component: lazyRouteComponent(
+    () => import('@/components/pages/vnc-view-page'),
+    'VncViewPage',
+  ),
+});
+
 const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren([overviewRoute, processesRoute, configRoute, logsRoute, debugRoute, settingsRoute]),
+  appLayoutRoute.addChildren([overviewRoute, processesRoute, vncViewRoute, configRoute, logsRoute, debugRoute, settingsRoute]),
 ]);
 
 export const appRouter = createRouter({
