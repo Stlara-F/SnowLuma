@@ -41,7 +41,6 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
       const rfb = new RFB(container, wsUrl);
       rfbRef.current = rfb;
       rfb.scaleViewport = scaleViewport;
-      rfb.resizeSession = true;
       rfb.qualityLevel = 6;
       rfb.compressionLevel = 2;
 
