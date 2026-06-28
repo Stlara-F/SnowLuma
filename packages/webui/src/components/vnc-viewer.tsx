@@ -17,10 +17,20 @@ interface VncViewerProps {
   onError?: (message: string) => void;
 }
 
+function safeDisconnect(rfb: RFB | null) {
+  if (!rfb) return;
+  try {
+    rfb.disconnect();
+  } catch {
+    // RFB may already be disconnected — ignore
+  }
+}
+
 export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
   ({ hostname, port, protocol = 'ws', scaleViewport = true, onConnected, onDisconnected, onCredentialsRequired, onError }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rfbRef = useRef<RFB | null>(null);
+    const disconnectedRef = useRef(false);
     const onConnectedRef = useRef(onConnected);
     const onDisconnectedRef = useRef(onDisconnected);
     const onCredentialsRequiredRef = useRef(onCredentialsRequired);
@@ -37,6 +47,7 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
       if (!container) return;
 
       container.innerHTML = '';
+      disconnectedRef.current = false;
 
       const rfb = new RFB(container, wsUrl);
       rfbRef.current = rfb;
@@ -44,18 +55,28 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
       rfb.qualityLevel = 6;
       rfb.compressionLevel = 2;
 
+      console.log('[VncViewer] RFB created, connecting...');
+
       const isCustomEvent = (event: Event): event is CustomEvent => 'detail' in event;
 
-      const onConnect = () => { onConnectedRef.current?.(); };
+      const onConnect = () => {
+        console.log('[VncViewer] RFB connected');
+        onConnectedRef.current?.();
+      };
       const onDisconnect = (e: Event) => {
+        disconnectedRef.current = true;
         let clean = true;
         if (isCustomEvent(e)) {
           const detailClean = (e as CustomEvent<{ clean?: boolean }>).detail?.clean;
           clean = detailClean !== false;
         }
+        console.log('[VncViewer] RFB disconnected, clean:', clean);
         onDisconnectedRef.current?.(clean);
       };
-      const onCredsRequired = () => { onCredentialsRequiredRef.current?.(); };
+      const onCredsRequired = () => {
+        console.log('[VncViewer] RFB credentials required');
+        onCredentialsRequiredRef.current?.();
+      };
       const onSecurityFailure = (e: Event) => {
         let reason = '连接失败';
         if (isCustomEvent(e)) {
@@ -64,6 +85,7 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
             reason = detailReason;
           }
         }
+        console.log('[VncViewer] RFB security failure:', reason);
         onErrorRef.current?.(reason);
       };
 
@@ -73,11 +95,15 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
       rfb.addEventListener('securityfailure', onSecurityFailure);
 
       return () => {
+        console.log('[VncViewer] cleanup');
         rfb.removeEventListener('connect', onConnect);
         rfb.removeEventListener('disconnect', onDisconnect);
         rfb.removeEventListener('credentialsrequired', onCredsRequired);
         rfb.removeEventListener('securityfailure', onSecurityFailure);
-        rfb.disconnect();
+        if (!disconnectedRef.current) {
+          disconnectedRef.current = true;
+          safeDisconnect(rfb);
+        }
         rfbRef.current = null;
       };
     }, [wsUrl, scaleViewport]);
@@ -87,7 +113,11 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
     }, []);
 
     const disconnect = useCallback(() => {
-      rfbRef.current?.disconnect();
+      const rfb = rfbRef.current;
+      if (!rfb || disconnectedRef.current) return;
+      disconnectedRef.current = true;
+      console.log('[VncViewer] disconnect called externally');
+      safeDisconnect(rfb);
       rfbRef.current = null;
     }, []);
 
