@@ -13,7 +13,7 @@ type ConnStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 export function VncViewPage() {
   const navigate = useNavigate();
   const { pid } = routeApi.useParams();
-  const { hostname: rawHost, port: rawPort, protocol: rawProto, processName: rawName } = routeApi.useSearch();
+  const { port: rawPort, processName: rawName } = routeApi.useSearch();
   const [vncPort] = useVncPort();
 
   const viewerRef = useRef<VncViewerHandle>(null);
@@ -22,9 +22,7 @@ export function VncViewPage() {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [pendingPassword, setPendingPassword] = useState(false);
 
-  const hostname = rawHost ?? (globalThis.location?.hostname ?? 'localhost');
   const port = rawPort ?? vncPort;
-  const protocol = rawProto ?? (globalThis.location?.protocol === 'https:' ? 'wss' : 'ws');
   const processName = rawName ?? `PID ${pid}`;
 
   return (
@@ -67,9 +65,7 @@ export function VncViewPage() {
       <div className="relative flex-1 min-h-0 mx-4 mb-4 rounded-lg overflow-hidden bg-black">
         <VncViewer
           ref={viewerRef}
-          hostname={hostname}
           port={port}
-          protocol={protocol}
           onConnected={() => setConnStatus('connected')}
           onDisconnected={(clean) => setConnStatus(clean ? 'disconnected' : 'error')}
           onCredentialsRequired={() => {

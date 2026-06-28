@@ -193,10 +193,8 @@ export function ProcessesPage() {
                         variant="outline"
                         disabled={busy}
                         onClick={() => {
-                          const hostname = globalThis.location?.hostname ?? 'localhost';
-                          const protocol = globalThis.location?.protocol === 'https:' ? 'wss' : 'ws';
                           const name = proc.name || `PID ${proc.pid}`;
-                          const sp = new URLSearchParams({ hostname, port: String(vncPort), protocol, processName: name });
+                          const sp = new URLSearchParams({ port: String(vncPort), processName: name });
                           navigate({ to: `/processes/vnc/${proc.pid}?${sp}` });
                         }}
                       >
