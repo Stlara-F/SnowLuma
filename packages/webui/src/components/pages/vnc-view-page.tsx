@@ -27,8 +27,8 @@ export function VncViewPage() {
 
   return (
     <div
-      className="flex flex-col h-full"
-      style={{ margin: '-1.25rem -1rem', width: 'calc(100% + 2rem)', height: 'calc(100% + 2.5rem)' }}
+      className="flex flex-col"
+      style={{ margin: '-1.25rem -1rem', width: 'calc(100% + 2rem)', height: 'calc(100dvh - 48px)' }}
     >
       <div className="flex items-center gap-3 px-4 pb-3 shrink-0">
         <Button variant="ghost" size="sm" onClick={() => navigate({ to: '/processes' })}>
