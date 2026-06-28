@@ -195,9 +195,8 @@ export function ProcessesPage() {
                           const port = 6081;
                           const protocol = globalThis.location?.protocol === 'https:' ? 'wss' : 'ws';
                           const name = proc.name || `PID ${proc.pid}`;
-                          navigate({
-                            to: `/processes/vnc/${proc.pid}?hostname=${hostname}&port=${port}&protocol=${protocol}&processName=${encodeURIComponent(name)}`,
-                          });
+                          const sp = new URLSearchParams({ hostname, port: String(port), protocol, processName: name });
+                          navigate({ to: `/processes/vnc/${proc.pid}?${sp}` });
                         }}
                       >
                         <Monitor className="size-3.5" /> 远程桌面

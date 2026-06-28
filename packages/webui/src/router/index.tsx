@@ -102,14 +102,14 @@ interface VncViewSearch {
   processName?: string;
 }
 
-const vncViewRoute = createRoute({
+export const vncViewRoute = createRoute({
   path: '/processes/vnc/$pid',
   getParentRoute: () => appLayoutRoute,
   validateSearch: (search: Record<string, unknown>): VncViewSearch => {
     const hostname = typeof search.hostname === 'string' ? search.hostname : undefined;
-    const portRaw = typeof search.port === 'string' ? parseInt(search.port) : undefined;
-    const port = portRaw && !isNaN(portRaw) ? portRaw : undefined;
-    const protocol = search.protocol === 'wss' ? 'wss' : undefined;
+    const portRaw = typeof search.port === 'string' ? parseInt(search.port) : NaN;
+    const port = !Number.isNaN(portRaw) ? portRaw : undefined;
+    const protocol = search.protocol === 'ws' || search.protocol === 'wss' ? search.protocol : undefined;
     const processName = typeof search.processName === 'string' ? search.processName : undefined;
     return { hostname, port, protocol, processName };
   },

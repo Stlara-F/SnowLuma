@@ -44,14 +44,26 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
       rfb.qualityLevel = 6;
       rfb.compressionLevel = 2;
 
+      const isCustomEvent = (event: Event): event is CustomEvent => 'detail' in event;
+
       const onConnect = () => { onConnectedRef.current?.(); };
       const onDisconnect = (e: Event) => {
-        const clean = (e as CustomEvent).detail?.clean !== false;
+        let clean = true;
+        if (isCustomEvent(e)) {
+          const detailClean = (e as CustomEvent<{ clean?: boolean }>).detail?.clean;
+          clean = detailClean !== false;
+        }
         onDisconnectedRef.current?.(clean);
       };
       const onCredsRequired = () => { onCredentialsRequiredRef.current?.(); };
       const onSecurityFailure = (e: Event) => {
-        const reason = (e as CustomEvent).detail?.reason || '连接失败';
+        let reason = '连接失败';
+        if (isCustomEvent(e)) {
+          const detailReason = (e as CustomEvent<{ reason?: string }>).detail?.reason;
+          if (typeof detailReason === 'string' && detailReason.length > 0) {
+            reason = detailReason;
+          }
+        }
         onErrorRef.current?.(reason);
       };
 
