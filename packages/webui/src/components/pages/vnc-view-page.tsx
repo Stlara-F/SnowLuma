@@ -20,10 +20,10 @@ export function VncViewPage() {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [pendingPassword, setPendingPassword] = useState(false);
 
-  const hostname = rawHost && /^[a-zA-Z0-9.-]+$/.test(rawHost) ? rawHost : (globalThis.location?.hostname ?? 'localhost');
-  const port = rawPort || 6081;
-  const protocol = rawProto || (globalThis.location?.protocol === 'https:' ? 'wss' : 'ws');
-  const processName = rawName || `PID ${pid}`;
+  const hostname = rawHost ?? (globalThis.location?.hostname ?? 'localhost');
+  const port = rawPort ?? 6081;
+  const protocol = rawProto ?? (globalThis.location?.protocol === 'https:' ? 'wss' : 'ws');
+  const processName = rawName ?? `PID ${pid}`;
 
   return (
     <div

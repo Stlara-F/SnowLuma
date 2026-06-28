@@ -35,10 +35,10 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
     const onDisconnectedRef = useRef(onDisconnected);
     const onCredentialsRequiredRef = useRef(onCredentialsRequired);
     const onErrorRef = useRef(onError);
-    useEffect(() => { onConnectedRef.current = onConnected; });
-    useEffect(() => { onDisconnectedRef.current = onDisconnected; });
-    useEffect(() => { onCredentialsRequiredRef.current = onCredentialsRequired; });
-    useEffect(() => { onErrorRef.current = onError; });
+    useEffect(() => { onConnectedRef.current = onConnected; }, [onConnected]);
+    useEffect(() => { onDisconnectedRef.current = onDisconnected; }, [onDisconnected]);
+    useEffect(() => { onCredentialsRequiredRef.current = onCredentialsRequired; }, [onCredentialsRequired]);
+    useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
     const wsUrl = `${protocol}://${hostname}:${port}/websockify`;
 
