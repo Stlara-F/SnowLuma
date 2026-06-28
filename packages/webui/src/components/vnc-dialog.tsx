@@ -5,16 +5,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
 
 interface VncDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  hostname?: string;
+  port?: number;
+  protocol?: 'http' | 'https';
 }
 
-export function VncDialog({ open, onOpenChange }: VncDialogProps) {
-  const hostname = globalThis.location?.hostname ?? 'localhost';
-  const vncUrl = `http://${hostname}:6081/vnc.html?autoconnect=1&resize=scale&reconnect=1`;
+export function VncDialog({ open, onOpenChange, hostname: hostnameProp, port = 6081, protocol }: VncDialogProps) {
+  const hostname = hostnameProp ?? globalThis.location?.hostname ?? 'localhost';
+  const proto = protocol ?? (globalThis.location?.protocol === 'https:' ? 'https' : 'http');
+  const vncUrl = `${proto}://${hostname}:${port}/vnc.html?autoconnect=1&resize=scale&reconnect=1`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -30,6 +33,7 @@ export function VncDialog({ open, onOpenChange }: VncDialogProps) {
         </DialogHeader>
         <div className="relative flex-1 min-h-0 overflow-hidden rounded-xl border bg-black">
           <iframe
+            title="VNC 远程桌面"
             src={vncUrl}
             className="absolute inset-0 w-full h-full"
             allowFullScreen
