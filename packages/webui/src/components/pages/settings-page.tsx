@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { ToggleSwitch } from '@/components/ui/toggle-switch';
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import {
   ACCENTS,
   DEFAULT_APPEARANCE,
@@ -39,6 +40,7 @@ import { ChangePasswordDialog } from '@/components/change-password-dialog';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { useApi } from '@/lib/api';
 import { useAppState } from '@/contexts/AppStateContext';
+import { useVncPort } from '@/hooks/use-vnc-settings';
 import { cn } from '@/lib/utils';
 import { settingsRoute, type SettingsTab } from '@/router';
 import { NotificationsPanel } from '@/components/settings/notifications-panel';
@@ -814,6 +816,7 @@ const TIME_FORMAT_OPTIONS: Opt<TimeFormat>[] = [
 function DataPanel() {
   const { appearance, setAppearance } = useTheme();
   const { pages, setPages } = useLayout();
+  const [vncPort, setVncPort] = useVncPort();
   return (
     <div className="flex flex-col gap-5">
       <Group title="数据刷新" icon={RefreshCw} description="总览页轮询刷新 QQ 列表、进程列表与系统状态的间隔。">
@@ -839,6 +842,19 @@ function DataPanel() {
       <Group title="时间格式" icon={Clock} description="日志与告警等时间戳的显示方式。">
         <SettingRow label="时制" layout="stack">
           <Segmented value={appearance.timeFormat} options={TIME_FORMAT_OPTIONS} onChange={(timeFormat) => setAppearance({ timeFormat })} />
+        </SettingRow>
+      </Group>
+
+      <Group title="VNC 远程桌面" icon={Monitor} description="远程桌面服务在宿主机上映射的端口号。修改后立即生效，下次连接时使用新端口。">
+        <SettingRow label="端口号" hint={`当前 ${vncPort}`} layout="stack">
+          <Input
+            type="number"
+            min={1}
+            max={65535}
+            value={vncPort}
+            onChange={(e) => setVncPort(Number(e.target.value))}
+            className="w-32"
+          />
         </SettingRow>
       </Group>
     </div>

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { getRouteApi, useNavigate } from '@tanstack/react-router';
 import { AlertCircle, ArrowLeft, Loader2, Monitor, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useVncPort } from '@/hooks/use-vnc-settings';
 import { VncViewer, type VncViewerHandle } from '@/components/vnc-viewer';
 import { VncPasswordDialog } from '@/components/vnc-password-dialog';
 
@@ -13,6 +14,7 @@ export function VncViewPage() {
   const navigate = useNavigate();
   const { pid } = routeApi.useParams();
   const { hostname: rawHost, port: rawPort, protocol: rawProto, processName: rawName } = routeApi.useSearch();
+  const [vncPort] = useVncPort();
 
   const viewerRef = useRef<VncViewerHandle>(null);
   const [connStatus, setConnStatus] = useState<ConnStatus>('connecting');
@@ -21,7 +23,7 @@ export function VncViewPage() {
   const [pendingPassword, setPendingPassword] = useState(false);
 
   const hostname = rawHost ?? (globalThis.location?.hostname ?? 'localhost');
-  const port = rawPort ?? 6081;
+  const port = rawPort ?? vncPort;
   const protocol = rawProto ?? (globalThis.location?.protocol === 'https:' ? 'wss' : 'ws');
   const processName = rawName ?? `PID ${pid}`;
 

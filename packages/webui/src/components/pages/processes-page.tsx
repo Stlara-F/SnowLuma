@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ProcessProbeDialog } from '@/components/process-probe-dialog';
+import { useVncPort } from '@/hooks/use-vnc-settings';
 import { cn } from '@/lib/utils';
 import type { HookProcessInfo } from '@/types';
 import { useAppState } from '@/contexts/AppStateContext';
@@ -50,6 +51,7 @@ function processBadgeVariant(status: HookProcessInfo['status']) {
  */
 export function ProcessesPage() {
   const navigate = useNavigate();
+  const [vncPort] = useVncPort();
   const { processList, processOps, refreshProcesses } = useAppState();
   const { statusOf, banner: processActionStatus, load, unload, refresh } = processOps;
   const { pages, setPages } = useLayout();
@@ -192,10 +194,9 @@ export function ProcessesPage() {
                         disabled={busy}
                         onClick={() => {
                           const hostname = globalThis.location?.hostname ?? 'localhost';
-                          const port = 6081;
                           const protocol = globalThis.location?.protocol === 'https:' ? 'wss' : 'ws';
                           const name = proc.name || `PID ${proc.pid}`;
-                          const sp = new URLSearchParams({ hostname, port: String(port), protocol, processName: name });
+                          const sp = new URLSearchParams({ hostname, port: String(vncPort), protocol, processName: name });
                           navigate({ to: `/processes/vnc/${proc.pid}?${sp}` });
                         }}
                       >
