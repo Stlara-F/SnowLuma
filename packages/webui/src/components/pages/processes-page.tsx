@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { AlertCircle, CheckCircle2, Cpu, Eye, Loader2, RefreshCw, Unplug } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Cpu, Eye, Loader2, Monitor, RefreshCw, Unplug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { ProcessProbeDialog } from '@/components/process-probe-dialog';
+import { VncDialog } from '@/components/vnc-dialog';
 import { cn } from '@/lib/utils';
 import type { HookProcessInfo } from '@/types';
 import { useAppState } from '@/contexts/AppStateContext';
@@ -54,6 +55,7 @@ export function ProcessesPage() {
   const off = useTheme().appearance.disableMotion;
   const [confirm, setConfirm] = useState<{ kind: 'load' | 'unload'; pid: number; name: string } | null>(null);
   const [probeDialog, setProbeDialog] = useState<{ pid: number; name: string } | null>(null);
+  const [vncOpen, setVncOpen] = useState(false);
 
   const sortKey = pages.processesSort;
   const sorted = useMemo(() => {
@@ -95,6 +97,9 @@ export function ProcessesPage() {
                 })}
               </div>
             )}
+            <Button variant="outline" size="sm" onClick={() => setVncOpen(true)}>
+              <Monitor className="size-3.5" /> 远程桌面
+            </Button>
             <Button variant="outline" size="sm" onClick={refreshProcesses}>
               <RefreshCw className="size-3.5" /> 刷新
             </Button>
@@ -265,6 +270,8 @@ export function ProcessesPage() {
           onOpenChange={(open) => !open && setProbeDialog(null)}
         />
       )}
+
+      <VncDialog open={vncOpen} onOpenChange={setVncOpen} />
     </div>
   );
 }
