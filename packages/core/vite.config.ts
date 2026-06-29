@@ -181,7 +181,8 @@ const BaseConfig = (source_map: boolean = false) => defineConfig({
   },
   define: {
     __BUILD_WEBUI__: process.env.BUILD_WEBUI === 'true',
-    __APP_VERSION__: JSON.stringify(rootPkg.version)
+    __APP_VERSION__: JSON.stringify(rootPkg.version),
+    __VNC_ENABLED__: process.env.VITE_VNC_ENABLED === 'true',
   }
 });
 

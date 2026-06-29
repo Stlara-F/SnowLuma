@@ -1,3 +1,4 @@
+import type { ServerType } from '@hono/node-server';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { HookManager, HookProcessInfo } from '@snowluma/bridge';
@@ -5,12 +6,16 @@ import { createLogger, getLogLevel, getRecentLogs, LOG_LEVELS, setLogLevel, subs
 import { loadOneBotConfig, saveOneBotConfig } from '@snowluma/onebot/config';
 import type { OneBotManager } from '@snowluma/onebot/manager';
 import type { OneBotConfig, JsonObject as OneBotJsonObject } from '@snowluma/onebot/types';
+import { WebSocketServer } from '@snowluma/websocket';
 import { readRuntimeConfig, updateRuntimeConfig, resolveRuntimeEnvOverrides } from '@snowluma/common/runtime';
+declare const __VNC_ENABLED__: boolean | undefined;
 import { execSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import http from 'http';
 import { createServer as createHttpsServer } from 'https';
 import { Hono, type Context } from 'hono';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -1373,11 +1378,49 @@ export async function initWebUI(
     }
   }
 
-  await new Promise<void>((resolve) => {
-    serve({ fetch: app.fetch, port: finalPort, hostname: host, ...(tlsServe ?? {}) }, (info) => {
-      log.info(`listening ${scheme}://${host}:${info.port}`);
-      resolve();
-    });
+  const vncServer: ServerType = serve({ fetch: app.fetch, port: finalPort, hostname: host, ...(tlsServe ?? {}) }, (info) => {
+    log.info(`listening ${scheme}://${host}:${info.port}`);
   });
+  const httpServer = vncServer as unknown as http.Server;
+
+  // VNC WebSocket proxy — forward authenticated WebSocket connections to
+  // the internal x11vnc service on localhost. This eliminates the need to
+  // expose port 5900/6081 externally; all VNC traffic flows through the same
+  // HTTP server that serves the WebUI. Only enabled when the build was
+  // compiled with VNC support (VITE_VNC_ENABLED=true) AND the runtime config
+  // has `vnc.enabled: true`.
+  const vncCfg = readRuntimeConfig().vnc;
+  if (typeof __VNC_ENABLED__ !== 'undefined' && __VNC_ENABLED__ && vncCfg?.enabled && httpServer) {
+    const vncProxy = new WebSocketServer({
+      server: httpServer,
+      path: '/api/vnc/ws',
+      verifyClient: (info, cb) => {
+        const u = new URL(info.req.url ?? '/', 'http://localhost');
+        const token = u.searchParams.get('token');
+        cb(!!token && sessionTokens.has(token));
+      },
+    });
+
+    vncProxy.on('connection', (ws) => {
+      const port = 5900;
+      const target = net.createConnection(port, '127.0.0.1');
+
+      const cleanup = () => {
+        try { target.destroy(); } catch { /* ignore */ }
+        try { ws.close(); } catch { /* ignore */ }
+      };
+
+      ws.on('message', (data: Buffer) => {
+        try { target.write(data); } catch { cleanup(); }
+      });
+      target.on('data', (data: Buffer) => {
+        try { ws.send(data); } catch { cleanup(); }
+      });
+      ws.on('close', cleanup);
+      target.on('error', cleanup);
+      target.on('close', cleanup);
+    });
+  }
+
   return { port: finalPort };
 }
