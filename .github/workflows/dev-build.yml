@@ -70,32 +70,32 @@ jobs:
       - name: Type check all packages
         run: pnpm typecheck
 
-setup:
-  runs-on: ubuntu-latest
-  outputs:
-    matrix: ${{ steps.set-matrix.outputs.matrix }}
-  steps:
-    - id: set-matrix
-      run: |
-        ALL_INCLUDES='[
-          {"name":"win-x64","os":"windows-latest","target":"win32-x64"},
-          {"name":"linux-x64","os":"ubuntu-latest","target":"linux-x64"},
-          {"name":"linux-arm64","os":"ubuntu-24.04-arm","target":"linux-arm64"},
-          {"name":"linux-x64-vnc","os":"ubuntu-latest","target":"linux-x64","vnc":true},
-          {"name":"linux-arm64-vnc","os":"ubuntu-24.04-arm","target":"linux-arm64","vnc":true}
-        ]'
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix
+        run: |
+          ALL_INCLUDES='[
+            {"name":"win-x64","os":"windows-latest","target":"win32-x64"},
+            {"name":"linux-x64","os":"ubuntu-latest","target":"linux-x64"},
+            {"name":"linux-arm64","os":"ubuntu-24.04-arm","target":"linux-arm64"},
+            {"name":"linux-x64-vnc","os":"ubuntu-latest","target":"linux-x64","vnc":true},
+            {"name":"linux-arm64-vnc","os":"ubuntu-24.04-arm","target":"linux-arm64","vnc":true}
+          ]'
 
-        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-          PLATFORMS="${{ github.event.inputs.platforms }}"
-        else
-          PLATFORMS="win-x64,linux-x64,linux-arm64,linux-x64-vnc,linux-arm64-vnc"
-        fi
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            PLATFORMS="${{ github.event.inputs.platforms }}"
+          else
+            PLATFORMS="win-x64,linux-x64,linux-arm64,linux-x64-vnc,linux-arm64-vnc"
+          fi
 
-        PLATFORMS=$(echo "$PLATFORMS" | tr -d ' ')
-        SELECTED_JSON=$(echo "$PLATFORMS" | jq -R 'split(",")')
-        FILTERED=$(echo "$ALL_INCLUDES" | jq --argjson selected "$SELECTED_JSON" '[.[] | select(.name as $n | $selected | index($n))]')
+          PLATFORMS=$(echo "$PLATFORMS" | tr -d ' ')
+          SELECTED_JSON=$(echo "$PLATFORMS" | jq -R 'split(",")')
+          FILTERED=$(echo "$ALL_INCLUDES" | jq --argjson selected "$SELECTED_JSON" '[.[] | select(.name as $n | $selected | index($n))]')
 
-        echo "matrix=$(echo "$FILTERED" | jq -c .)" >> $GITHUB_OUTPUT
+          echo "matrix=$(echo "$FILTERED" | jq -c .)" >> $GITHUB_OUTPUT
         
   build:
     needs: [cleanup, typecheck, setup]          # 等待 setup 完成
