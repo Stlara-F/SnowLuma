@@ -1391,19 +1391,38 @@ export async function initWebUI(
   // has `vnc.enabled: true`.
   const vncCfg = readRuntimeConfig().vnc;
   if (typeof __VNC_ENABLED__ !== 'undefined' && __VNC_ENABLED__ && vncCfg?.enabled && httpServer) {
+    // Short-lived tickets for VNC WebSocket connections, keyed by ticket ID.
+    // Tickets are consumed immediately on use (deleted from map) so replay
+    // is impossible; the 30-second TTL is only a janitor fallback.
+    const vncTickets = new Map<string, { expiresAt: number }>();
+
+    app.post('/api/vnc/ticket', (c) => {
+      const id = randomBytes(16).toString('hex');
+      vncTickets.set(id, { expiresAt: Date.now() + 30_000 });
+      setTimeout(() => vncTickets.delete(id), 30_000);
+      return c.json({ ticket: id });
+    });
+
     const vncProxy = new WebSocketServer({
       server: httpServer,
       path: '/api/vnc/ws',
       verifyClient: (info, cb) => {
         const u = new URL(info.req.url ?? '/', 'http://localhost');
-        const token = u.searchParams.get('token');
-        cb(!!token && sessionTokens.has(token));
+        const id = u.searchParams.get('ticket');
+        const entry = id ? vncTickets.get(id) : undefined;
+        if (entry && Date.now() <= entry.expiresAt) {
+          vncTickets.delete(id!); // consume the ticket immediately
+          cb(true);
+        } else {
+          cb(false, 401, 'Invalid or expired ticket');
+        }
       },
     });
 
     vncProxy.on('connection', (ws) => {
-      const port = 5900;
-      const target = net.createConnection(port, '127.0.0.1');
+      const targetHost = vncCfg.host ?? '127.0.0.1';
+      const targetPort = vncCfg.port ?? 5900;
+      const target = net.createConnection(targetPort, targetHost);
 
       const cleanup = () => {
         try { target.destroy(); } catch { /* ignore */ }

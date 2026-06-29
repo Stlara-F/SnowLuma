@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import RFB from '@novnc/novnc';
 
 export interface VncViewerHandle {
@@ -28,6 +28,7 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
     const containerRef = useRef<HTMLDivElement>(null);
     const rfbRef = useRef<RFB | null>(null);
     const disconnectedRef = useRef(false);
+    const [ticket, setTicket] = useState<string | null>(null);
     const onConnectedRef = useRef(onConnected);
     const onDisconnectedRef = useRef(onDisconnected);
     const onCredentialsRequiredRef = useRef(onCredentialsRequired);
@@ -37,9 +38,28 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
     useEffect(() => { onCredentialsRequiredRef.current = onCredentialsRequired; }, [onCredentialsRequired]);
     useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
-    const wsUrl = `${globalThis.location?.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location?.host}/api/vnc/ws?token=${localStorage.getItem('snowluma_token') ?? ''}`;
+    // Obtain a short-lived VNC ticket from the backend instead of exposing
+    // the long-lived session token in the WebSocket URL.
+    useEffect(() => {
+      let cancelled = false;
+      const token = localStorage.getItem('snowluma_token');
+      if (!token) {
+        onErrorRef.current?.('登录信息已过期，请重新登录');
+        return;
+      }
+      fetch('/api/vnc/ticket', { headers: { Authorization: 'Bearer ' + token } })
+        .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+        .then((d) => { if (!cancelled) setTicket(d.ticket as string); })
+        .catch(() => { if (!cancelled) onErrorRef.current?.('获取 VNC 凭证失败'); });
+      return () => { cancelled = true; };
+    }, []);
+
+    const wsUrl = ticket
+      ? `${globalThis.location?.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location?.host}/api/vnc/ws?ticket=${ticket}`
+      : null;
 
     useEffect(() => {
+      if (!wsUrl) return;
       const container = containerRef.current;
       if (!container) return;
 
