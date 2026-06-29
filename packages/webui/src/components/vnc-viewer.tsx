@@ -47,7 +47,7 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
         onErrorRef.current?.('登录信息已过期，请重新登录');
         return;
       }
-      fetch('/api/vnc/ticket', { headers: { Authorization: 'Bearer ' + token } })
+      fetch('/api/vnc/ticket', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })
         .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
         .then((d) => { if (!cancelled) setTicket(d.ticket as string); })
         .catch(() => { if (!cancelled) onErrorRef.current?.('获取 VNC 凭证失败'); });

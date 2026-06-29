@@ -193,7 +193,11 @@ export function ProcessesPage() {
                           disabled={busy}
                           onClick={() => {
                             const name = proc.name || `PID ${proc.pid}`;
-                            navigate({ to: `/processes/vnc/${proc.pid}?processName=${encodeURIComponent(name)}` });
+                            navigate({
+                              to: '/processes/vnc/$pid',
+                              params: { pid: String(proc.pid) },
+                              search: { processName: name },
+                            });
                           }}
                         >
                           <Monitor className="size-3.5" /> 远程桌面

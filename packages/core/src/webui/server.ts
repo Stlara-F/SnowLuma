@@ -1399,7 +1399,8 @@ export async function initWebUI(
     app.post('/api/vnc/ticket', (c) => {
       const id = randomBytes(16).toString('hex');
       vncTickets.set(id, { expiresAt: Date.now() + 30_000 });
-      setTimeout(() => vncTickets.delete(id), 30_000);
+      const timer = setTimeout(() => vncTickets.delete(id), 30_000);
+      timer.unref?.();
       return c.json({ ticket: id });
     });
 
@@ -1424,7 +1425,10 @@ export async function initWebUI(
       const targetPort = vncCfg.port ?? 5900;
       const target = net.createConnection(targetPort, targetHost);
 
+      let cleaned = false;
       const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
         try { target.destroy(); } catch { /* ignore */ }
         try { ws.close(); } catch { /* ignore */ }
       };
@@ -1436,6 +1440,7 @@ export async function initWebUI(
         try { ws.send(data); } catch { cleanup(); }
       });
       ws.on('close', cleanup);
+      ws.on('error', cleanup);
       target.on('error', cleanup);
       target.on('close', cleanup);
     });
