@@ -7,7 +7,6 @@ export interface VncViewerHandle {
 }
 
 interface VncViewerProps {
-  port: number;
   scaleViewport?: boolean;
   onConnected?: () => void;
   onDisconnected?: (clean: boolean) => void;
@@ -25,7 +24,7 @@ function safeDisconnect(rfb: RFB | null) {
 }
 
 export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
-  ({ port, scaleViewport = true, onConnected, onDisconnected, onCredentialsRequired, onError }, ref) => {
+  ({ scaleViewport = true, onConnected, onDisconnected, onCredentialsRequired, onError }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rfbRef = useRef<RFB | null>(null);
     const disconnectedRef = useRef(false);
@@ -38,7 +37,7 @@ export const VncViewer = forwardRef<VncViewerHandle, VncViewerProps>(
     useEffect(() => { onCredentialsRequiredRef.current = onCredentialsRequired; }, [onCredentialsRequired]);
     useEffect(() => { onErrorRef.current = onError; }, [onError]);
 
-    const wsUrl = `${globalThis.location?.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location?.host}/api/vnc/ws?port=${port}&token=${localStorage.getItem('snowluma_token') ?? ''}`;
+    const wsUrl = `${globalThis.location?.protocol === 'https:' ? 'wss' : 'ws'}://${globalThis.location?.host}/api/vnc/ws?token=${localStorage.getItem('snowluma_token') ?? ''}`;
 
     useEffect(() => {
       const container = containerRef.current;

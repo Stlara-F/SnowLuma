@@ -2,7 +2,6 @@ import { useRef, useState } from 'react';
 import { getRouteApi, useNavigate } from '@tanstack/react-router';
 import { AlertCircle, ArrowLeft, Loader2, Monitor, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useVncPort } from '@/hooks/use-vnc-settings';
 import { VncViewer, type VncViewerHandle } from '@/components/vnc-viewer';
 import { VncPasswordDialog } from '@/components/vnc-password-dialog';
 
@@ -13,8 +12,7 @@ type ConnStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 export function VncViewPage() {
   const navigate = useNavigate();
   const { pid } = routeApi.useParams();
-  const { port: rawPort, processName: rawName } = routeApi.useSearch();
-  const [vncPort] = useVncPort();
+  const { processName: rawName } = routeApi.useSearch();
 
   const viewerRef = useRef<VncViewerHandle>(null);
   const [connStatus, setConnStatus] = useState<ConnStatus>('connecting');
@@ -22,7 +20,6 @@ export function VncViewPage() {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [pendingPassword, setPendingPassword] = useState(false);
 
-  const port = rawPort ?? vncPort;
   const processName = rawName ?? `PID ${pid}`;
 
   return (
@@ -65,7 +62,6 @@ export function VncViewPage() {
       <div className="relative flex-1 min-h-0 mx-4 mb-4 rounded-lg overflow-hidden bg-black">
         <VncViewer
           ref={viewerRef}
-          port={port}
           onConnected={() => setConnStatus('connected')}
           onDisconnected={(clean) => setConnStatus(clean ? 'disconnected' : 'error')}
           onCredentialsRequired={() => {

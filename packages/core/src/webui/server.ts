@@ -1397,9 +1397,8 @@ export async function initWebUI(
       },
     });
 
-    vncProxy.on('connection', (ws, req) => {
-      const u = new URL(req.url ?? '/', 'http://localhost');
-      const port = Math.max(1, Math.min(65535, Number(u.searchParams.get('port')) || 6081));
+    vncProxy.on('connection', (ws) => {
+      const port = 6081;
       const target = net.createConnection(port, '127.0.0.1');
 
       const cleanup = () => {
