@@ -21,6 +21,7 @@ export default defineConfig({
   },
   define: {
     __APP_VERSION__: JSON.stringify(rootPkg.version),
+    __VNC_ENABLED__: JSON.stringify(process.env.VITE_VNC_ENABLED === 'true'),
   },
   server: {
     port: 5178,
