@@ -2,6 +2,11 @@ name: Dev Build
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Comma-separated Dev Build platforms (linux-x64, linux-arm64)
+        required: false
+        default: "linux-x64,linux-arm64"
   push:
     branches:
       - '**'
