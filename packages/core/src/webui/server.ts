@@ -1424,11 +1424,14 @@ export async function initWebUI(
       const targetHost = vncCfg.host ?? '127.0.0.1';
       const targetPort = vncCfg.port ?? 5900;
       const target = net.createConnection(targetPort, targetHost);
+      const connectTimer = setTimeout(() => { try { target.destroy(); } catch {} }, 5000);
+      target.on('connect', () => clearTimeout(connectTimer));
 
       let cleaned = false;
       const cleanup = () => {
         if (cleaned) return;
         cleaned = true;
+        clearTimeout(connectTimer);
         try { target.destroy(); } catch { /* ignore */ }
         try { ws.close(); } catch { /* ignore */ }
       };

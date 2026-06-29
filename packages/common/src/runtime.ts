@@ -40,7 +40,7 @@ export function normalizeRuntimeConfig(parsed: unknown): RuntimeConfig {
     webuiTls: { enabled: isObject(obj.webuiTls) ? normalizeBool(obj.webuiTls.enabled, false) : false },
     trustProxy: typeof obj.trustProxy === 'string' ? obj.trustProxy : '',
     vnc: isObject(obj.vnc)
-      ? { enabled: normalizeBool(obj.vnc.enabled, false), host: typeof obj.vnc.host === 'string' ? obj.vnc.host : '127.0.0.1', port: normalizePort(obj.vnc.port, 5900) }
+      ? { enabled: normalizeBool(obj.vnc.enabled, false), host: typeof obj.vnc.host === 'string' && obj.vnc.host.trim() ? obj.vnc.host : '127.0.0.1', port: normalizePort(obj.vnc.port, 5900) }
       : undefined,
   };
 }

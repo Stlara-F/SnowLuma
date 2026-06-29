@@ -63,7 +63,11 @@ export function VncViewPage() {
         <VncViewer
           ref={viewerRef}
           onConnected={() => setConnStatus('connected')}
-          onDisconnected={(clean) => setConnStatus(clean ? 'disconnected' : 'error')}
+          onDisconnected={(clean) => {
+            setConnStatus(clean ? 'disconnected' : 'error');
+            setPendingPassword(false);
+            setPasswordDialogOpen(false);
+          }}
           onCredentialsRequired={() => {
             setPendingPassword(true);
             setPasswordDialogOpen(true);
@@ -71,6 +75,8 @@ export function VncViewPage() {
           onError={(msg) => {
             setConnStatus('error');
             setErrorMessage(msg);
+            setPendingPassword(false);
+            setPasswordDialogOpen(false);
           }}
         />
         {connStatus === 'error' && errorMessage && (
