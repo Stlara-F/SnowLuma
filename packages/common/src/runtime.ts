@@ -16,6 +16,9 @@ export interface RuntimeConfig {
   /** Raw trust-proxy directive (same domain as SNOWLUMA_WEBUI_TRUST_PROXY),
    * consumed by the WebUI's client-ip resolver. '' = trust nobody. */
   trustProxy?: string;
+  /** VNC proxy target. The VNC feature must also be compiled with
+   * VITE_VNC_ENABLED=true; this config enables it at runtime. */
+  vnc?: { enabled?: boolean; host?: string; port?: number };
 }
 
 const CONFIG_DIR = 'config';
@@ -36,6 +39,9 @@ export function normalizeRuntimeConfig(parsed: unknown): RuntimeConfig {
     webuiHost: normalizeHost(obj.webuiHost),
     webuiTls: { enabled: isObject(obj.webuiTls) ? normalizeBool(obj.webuiTls.enabled, false) : false },
     trustProxy: typeof obj.trustProxy === 'string' ? obj.trustProxy : '',
+    vnc: isObject(obj.vnc)
+      ? { enabled: normalizeBool(obj.vnc.enabled, false), host: typeof obj.vnc.host === 'string' ? obj.vnc.host : '127.0.0.1', port: normalizePort(obj.vnc.port, 5900) }
+      : undefined,
   };
 }
 
@@ -116,12 +122,15 @@ function saveRuntimeConfig(config: RuntimeConfig): void {
  *  on every known field (so we can skip a needless rewrite). */
 function sameRuntimeConfig(parsed: Record<string, unknown>, n: RuntimeConfig): boolean {
   const parsedTls = isObject(parsed.webuiTls) ? parsed.webuiTls.enabled : undefined;
+  const parsedVnc = isObject(parsed.vnc) ? { enabled: parsed.vnc.enabled, host: parsed.vnc.host, port: parsed.vnc.port } : undefined;
+  const nv = n.vnc ? { enabled: n.vnc.enabled, host: n.vnc.host, port: n.vnc.port } : undefined;
   return (
     parsed.webuiPort === n.webuiPort
     && parsed.hookAutoLoad === n.hookAutoLoad
     && parsed.webuiHost === n.webuiHost
     && parsedTls === n.webuiTls?.enabled
     && parsed.trustProxy === n.trustProxy
+    && JSON.stringify(parsedVnc) === JSON.stringify(nv)
   );
 }
 
