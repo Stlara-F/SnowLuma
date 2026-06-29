@@ -8,6 +8,11 @@ on:
     tags-ignore:
       - 'v*'
 
+permissions:
+  contents: write
+  actions: write
+
+
 jobs:
   cleanup:
     runs-on: ubuntu-latest
