@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: Comma-separated Dev Build platforms (win-x64, linux-x64, linux-arm64, linux-x64-vnc, linux-arm64-vnc)
+        description: Comma-separated Dev Build platforms (linux-x64-vnc, linux-arm64-vnc)
         required: false
-        default: "win-x64, linux-x64, linux-arm64, linux-x64-vnc, linux-arm64-vnc"
+        default: "linux-x64-vnc, linux-arm64-vnc"
   push:
     branches:
       - '**'
