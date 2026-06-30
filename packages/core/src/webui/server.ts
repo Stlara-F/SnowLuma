@@ -1,3 +1,4 @@
+import type { ServerType } from '@hono/node-server';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import type { HookManager, HookProcessInfo } from '@snowluma/bridge';
@@ -6,12 +7,16 @@ import { loadOneBotConfig, saveOneBotConfig } from '@snowluma/onebot/config';
 import { loadGlobalSettings, saveGlobalSettings } from '@snowluma/onebot/global-config';
 import type { OneBotManager } from '@snowluma/onebot/manager';
 import type { OneBotConfig, JsonObject as OneBotJsonObject } from '@snowluma/onebot/types';
+import { WebSocketServer } from '@snowluma/websocket';
 import { readRuntimeConfig, updateRuntimeConfig, resolveRuntimeEnvOverrides } from '@snowluma/common/runtime';
+declare const __VNC_ENABLED__: boolean | undefined;
 import { execSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import http from 'http';
 import { createServer as createHttpsServer } from 'https';
 import { Hono, type Context } from 'hono';
+import net from 'net';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -1437,11 +1442,76 @@ export async function initWebUI(
     }
   }
 
-  await new Promise<void>((resolve) => {
-    serve({ fetch: app.fetch, port: finalPort, hostname: host, ...(tlsServe ?? {}) }, (info) => {
-      log.info(`listening ${scheme}://${host}:${info.port}`);
-      resolve();
-    });
+  const vncServer: ServerType = serve({ fetch: app.fetch, port: finalPort, hostname: host, ...(tlsServe ?? {}) }, (info) => {
+    log.info(`listening ${scheme}://${host}:${info.port}`);
   });
+  const httpServer = vncServer as unknown as http.Server;
+
+  // VNC WebSocket proxy — forward authenticated WebSocket connections to
+  // the internal x11vnc service on localhost. This eliminates the need to
+  // expose port 5900/6081 externally; all VNC traffic flows through the same
+  // HTTP server that serves the WebUI. Only enabled when the build was
+  // compiled with VNC support (VITE_VNC_ENABLED=true) AND the runtime config
+  // has `vnc.enabled: true`.
+  const vncCfg = readRuntimeConfig().vnc;
+  if (typeof __VNC_ENABLED__ !== 'undefined' && __VNC_ENABLED__ && vncCfg?.enabled && httpServer) {
+    // Short-lived tickets for VNC WebSocket connections, keyed by ticket ID.
+    // Tickets are consumed immediately on use (deleted from map) so replay
+    // is impossible; the 30-second TTL is only a janitor fallback.
+    const vncTickets = new Map<string, { expiresAt: number }>();
+
+    app.post('/api/vnc/ticket', (c) => {
+      const id = randomBytes(16).toString('hex');
+      vncTickets.set(id, { expiresAt: Date.now() + 30_000 });
+      const timer = setTimeout(() => vncTickets.delete(id), 30_000);
+      timer.unref?.();
+      return c.json({ ticket: id });
+    });
+
+    const vncProxy = new WebSocketServer({
+      server: httpServer,
+      path: '/api/vnc/ws',
+      verifyClient: (info, cb) => {
+        const u = new URL(info.req.url ?? '/', 'http://localhost');
+        const id = u.searchParams.get('ticket');
+        const entry = id ? vncTickets.get(id) : undefined;
+        if (entry && Date.now() <= entry.expiresAt) {
+          vncTickets.delete(id!); // consume the ticket immediately
+          cb(true);
+        } else {
+          cb(false, 401, 'Invalid or expired ticket');
+        }
+      },
+    });
+
+    vncProxy.on('connection', (ws) => {
+      const targetHost = vncCfg.host ?? '127.0.0.1';
+      const targetPort = vncCfg.port ?? 5900;
+      const target = net.createConnection(targetPort, targetHost);
+      const connectTimer = setTimeout(() => { try { target.destroy(); } catch {} }, 5000);
+      target.on('connect', () => clearTimeout(connectTimer));
+
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        clearTimeout(connectTimer);
+        try { target.destroy(); } catch { /* ignore */ }
+        try { ws.close(); } catch { /* ignore */ }
+      };
+
+      ws.on('message', (data: Buffer) => {
+        try { target.write(data); } catch { cleanup(); }
+      });
+      target.on('data', (data: Buffer) => {
+        try { ws.send(data); } catch { cleanup(); }
+      });
+      ws.on('close', cleanup);
+      ws.on('error', cleanup);
+      target.on('error', cleanup);
+      target.on('close', cleanup);
+    });
+  }
+
   return { port: finalPort };
 }

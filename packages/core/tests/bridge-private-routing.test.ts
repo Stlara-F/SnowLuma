@@ -5,6 +5,8 @@ import type { SendMessageRequest, SendMessageResponse } from '@snowluma/proto-de
 import type { FileExtra } from '@snowluma/proto-defs/message';
 import type { OidbBase } from '@snowluma/proto-defs/oidb';
 import type { OidbOfflineFileFinalizeResp } from '@snowluma/proto-defs/oidb-actions/media';
+import { Bridge } from '../src/bridge/bridge';
+import { IdentityService } from '@snowluma/protocol/identity-service';
 
 vi.mock('@snowluma/protocol/element-builder', () => ({
   buildSendElems: vi.fn(async () => [{ text: { str: 'stub media elem' } }]),
