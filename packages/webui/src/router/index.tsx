@@ -2,24 +2,18 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
-  lazyRouteComponent,
-  Outlet,
 } from '@tanstack/react-router';
 import { AppLayout } from './app-layout';
-// Imported eagerly (not lazy): the error / not-found fallbacks must render
-// even when a route's own chunk failed to load.
 import { ErrorPage, NotFoundPage } from '@/components/pages/status-screens';
 
-// Page components are loaded on demand so the initial paint only ships
-// the auth surface + layout shell. With `defaultPreload: 'intent'` set
-// below, the router warms the next chunk on hover/focus, so navigation
-// still feels instant after the first idle moment. Previously every
-// page (overview / config / logs / settings) lived in the single
-// ~600 kB bundle that Vite explicitly warned about — config-page edit
-// dialog alone pulls in a large form surface that most users never
-// touch on first visit.
+// ─── Simplified route tree ───────────────────────────────────────────────────
+// In the tab-based architecture, child page routes are removed.
+// WorkspaceView handles tab content rendering internally.
+// Only the root → appLayoutRoute remains for the auth/layout shell.
+// The settings route types are kept for deep-linking compatibility.
+
 const rootRoute = createRootRoute({
-  component: () => <Outlet />,
+  component: () => <AppLayout />,
 });
 
 const appLayoutRoute = createRoute({
@@ -28,97 +22,7 @@ const appLayoutRoute = createRoute({
   component: AppLayout,
 });
 
-const overviewRoute = createRoute({
-  path: '/',
-  getParentRoute: () => appLayoutRoute,
-  component: lazyRouteComponent(
-    () => import('@/components/pages/overview-page'),
-    'OverviewPage',
-  ),
-});
-
-const processesRoute = createRoute({
-  path: '/processes',
-  getParentRoute: () => appLayoutRoute,
-  component: lazyRouteComponent(
-    () => import('@/components/pages/processes-page'),
-    'ProcessesPage',
-  ),
-});
-
-const configRoute = createRoute({
-  path: '/config',
-  getParentRoute: () => appLayoutRoute,
-  component: lazyRouteComponent(
-    () => import('@/components/pages/config-page'),
-    'ConfigPage',
-  ),
-});
-
-const logsRoute = createRoute({
-  path: '/logs',
-  getParentRoute: () => appLayoutRoute,
-  component: lazyRouteComponent(
-    () => import('@/components/pages/logs-page'),
-    'LogsPage',
-  ),
-});
-
-const debugRoute = createRoute({
-  path: '/debug',
-  getParentRoute: () => appLayoutRoute,
-  component: lazyRouteComponent(
-    () => import('@/components/pages/debug-page'),
-    'DebugPage',
-  ),
-});
-
-/** Settings sub-tabs — also the contract for the `?tab=` deep link. */
-export const SETTINGS_TABS = ['appearance', 'data', 'advanced', 'account', 'system', 'notifications', 'globalConfig', 'about'] as const;
-export type SettingsTab = (typeof SETTINGS_TABS)[number];
-
-export const settingsRoute = createRoute({
-  path: '/settings',
-  getParentRoute: () => appLayoutRoute,
-  // `?tab=` deep-links a settings sub-tab (e.g. the sidebar update banner jumps
-  // straight to 关于). Unknown/missing → omitted (the page falls back to 外观).
-  validateSearch: (search: Record<string, unknown>): { tab?: SettingsTab } => {
-    const t = search.tab;
-    return typeof t === 'string' && (SETTINGS_TABS as readonly string[]).includes(t)
-      ? { tab: t as SettingsTab }
-      : {};
-  },
-  component: lazyRouteComponent(
-    () => import('@/components/pages/settings-page'),
-    'SettingsPage',
-  ),
-});
-
-/** VNC view route — full-bleed remote desktop viewer. */
-interface VncViewSearch {
-  processName?: string;
-}
-
-const vncViewRoute = __VNC_ENABLED__
-  ? createRoute({
-    path: '/processes/vnc/$pid',
-    getParentRoute: () => appLayoutRoute,
-    validateSearch: (search: Record<string, unknown>): VncViewSearch => {
-      const processName = typeof search.processName === 'string' ? search.processName.slice(0, 128) : undefined;
-      return { processName };
-    },
-    component: lazyRouteComponent(
-      () => import('@/components/pages/vnc-view-page'),
-      'VncViewPage',
-    ),
-  })
-  : null;
-
-const routeTree = rootRoute.addChildren([
-  appLayoutRoute.addChildren(
-    [overviewRoute, processesRoute, ...(__VNC_ENABLED__ ? [vncViewRoute!] : []), configRoute, logsRoute, debugRoute, settingsRoute],
-  ),
-]);
+const routeTree = rootRoute.addChildren([appLayoutRoute]);
 
 export const appRouter = createRouter({
   routeTree,
@@ -132,6 +36,13 @@ declare module '@tanstack/react-router' {
     router: typeof appRouter;
   }
 }
+
+// ─── Settings sub-tab types (kept for settings-page compatibility) ────────────
+export const SETTINGS_TABS = ['appearance', 'data', 'advanced', 'account', 'system', 'notifications', 'about'] as const;
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+// Settings route path constant (used by settings-page for ?tab= deep links).
+export const SETTINGS_PATH = '/settings' as const;
 
 /** Paths registered on the layout — single source of truth for nav metadata. */
 export type AppPath = '/' | '/processes' | '/config' | '/logs' | '/debug' | '/settings';

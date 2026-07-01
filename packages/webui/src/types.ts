@@ -107,22 +107,13 @@ export interface StatusCommandConfig {
 
 export interface OneBotConfig {
   networks: OneBotNetworks;
+  musicSignUrl?: string;
   statusCommand: StatusCommandConfig;
   /** Per-account opt-in to global notification channels (by channel id). */
   notifications?: { channelIds: string[] };
-}
-
-// ─── Global deployment settings (config/snowluma.json) ──────────────────────
-// All-accounts SnowLuma knobs that aren't per-UIN: rkey fallback servers and
-// the music-card signing endpoint. Mirrors @snowluma/onebot/global-config.
-export interface RKeyConfig {
-  fallbackServers: string[];
-}
-
-export interface GlobalSettings {
-  rkey: RKeyConfig;
-  /** Music-card signing service URL. Empty = built-in default. */
-  musicSignUrl: string;
+  /** Opt-in remote rkey fallback servers. No dedicated form yet — preserved
+   *  verbatim across load/save so a hand-edited value survives WebUI writes. */
+  rkey?: { fallbackServers: string[] };
 }
 
 // ─── Notifications (account up/down webhooks) ───────────────────────────────
@@ -154,6 +145,53 @@ export interface NotificationDeliveryRecord {
 
 export type NetworkKind = keyof OneBotNetworks;
 
+// ─── Tab System Types ────────────────────────────────────────────────────────
+
+/** A single open tab in the workspace. */
+export interface TabItem {
+  id: string;
+  /** Which page this tab renders. */
+  pageId: 'overview' | 'processes' | 'config' | 'logs' | 'debug' | 'settings';
+  label: string;
+  /** Lucide icon name — resolved at render time. */
+  iconName: string;
+  /** Scroll position cache for unmount/remount optimization. */
+  scrollTop?: number;
+  /** Epoch ms when this tab was last active; drives the unmount strategy. */
+  lastActiveTime: number;
+  /** For VNC overlay: process id + name (kept outside the tab tree). */
+  vncPid?: string;
+  vncProcessName?: string;
+  /** For config tabs: the specific UIN this tab displays (supports multi-tab). */
+  configUin?: string;
+  /** Display label for config tabs, e.g. "节点配置 - Bot001". */
+  configLabel?: string;
+}
+
+/** Recursive split-node tree. Leaves hold a tab; internal nodes hold a split. */
+export type SplitNode =
+  | { type: 'leaf'; tabId: string }
+  | {
+      type: 'split';
+      direction: 'horizontal' | 'vertical';
+      /** Panel-group id used by react-resizable-panels. */
+      groupId: string;
+      /** Ratio in 0..1 for the first child; second child gets 1 - ratio. */
+      ratio: number;
+      children: [SplitNode, SplitNode];
+    };
+
+/** Sidebar menu item (for the floating dropdown). */
+export interface SidebarMenuItem {
+  id: string;
+  pageId: TabItem['pageId'];
+  label: string;
+  iconName: string;
+  description: string;
+  /** Sub-items that expand sideways on hover. */
+  children?: SidebarMenuItem[];
+}
+
 // WebUI listener self-config (Wave A1). Listener-level changes are
 // restart-to-apply; `envOverrides` lists fields currently pinned by env vars.
 export interface SystemSettings {
@@ -171,25 +209,7 @@ export interface SystemSettingsResponse {
   restartRequiredToApply: boolean;
 }
 
-// Debug tools (Wave A3; roles + streaming added in the console expansion).
-
-/** Semantic role of a param, mirrored from the backend's `FieldRole`. Drives
- *  which smart widget the tester renders. Unknown values degrade to the plain
- *  typed control, so this list can lag the backend without breaking. */
-export type FieldRole =
-  | 'group_id'
-  | 'user_id'
-  | 'member_id'
-  | 'message_id'
-  | 'file_id'
-  | 'file'
-  | 'image'
-  | 'record'
-  | 'video'
-  | 'duration'
-  | 'timestamp'
-  | 'face_id';
-
+// Debug tools (Wave A3).
 export interface DebugActionParam {
   name: string;
   type: string;
@@ -197,8 +217,6 @@ export interface DebugActionParam {
   default?: unknown;
   desc?: string;
   values?: (string | number)[];
-  /** Semantic role (group_id / user_id / image / …) for widget selection. */
-  role?: FieldRole;
 }
 export interface DebugActionDoc {
   name: string;
@@ -207,32 +225,7 @@ export interface DebugActionDoc {
   summary?: string;
   returns?: string;
   readOnly: boolean;
-  /** True for Stream API actions — invoke via the streaming transport. */
-  stream?: boolean;
-  /** Cross-field constraints, for display in the tester / API browser. */
-  invariants?: string[];
   params: DebugActionParam[];
-}
-
-/** One frame relayed from /api/debug/invoke-stream — an OB11 envelope carrying
- *  the stream marker. Intermediate frames have `data.type` of stream/error;
- *  the terminal frame mirrors the action's final response. */
-export interface DebugStreamFrame {
-  status: string;
-  retcode?: number;
-  data?: unknown;
-  message?: string;
-  wording?: string;
-  stream?: string;
-  echo?: unknown;
-}
-
-/** Result of POST /api/debug/upload — a path on the SERVER for a send action. */
-export interface DebugUploadResult {
-  status: string;
-  path?: string;
-  size?: number;
-  message?: string;
 }
 export interface DebugInvokeResult {
   status: string;

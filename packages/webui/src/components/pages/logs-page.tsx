@@ -474,7 +474,7 @@ export function LogsPage() {
           <ScrollArea className="min-h-0 flex-1" viewportClassName="[&>div]:!block">
             <div className="font-mono text-xs">
               {filtered.length > 0 && (
-                <div className="sticky top-0 z-10 hidden items-center gap-3 border-b border-border/60 bg-card/75 px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 backdrop-blur-md sm:flex">
+                <div className="sticky top-0 hidden items-center gap-3 border-b border-border/60 bg-card/75 px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 backdrop-blur-md sm:flex">
                   <span className="w-[104px] shrink-0">时间</span>
                   <span className="w-[76px] shrink-0">级别</span>
                   <span className="w-28 shrink-0">模块</span>

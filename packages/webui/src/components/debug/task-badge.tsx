@@ -1,8 +1,3 @@
-// TaskBadge — the app-wide floating indicator for in-flight debug tasks. Sits
-// bottom-right on every page so a streaming upload/download stays visible after
-// you switch tabs. Collapsed: a chip with a ring-progress + count. Expanded: a
-// list with per-task progress, cancel (running) / dismiss (finished). Renders
-// nothing when there are no tasks at all.
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, Loader2, X, XCircle } from 'lucide-react';

@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { useNavigate } from '@tanstack/react-router';
 import { AlertCircle, CheckCircle2, Cpu, Eye, Loader2, Monitor, RefreshCw, Unplug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,7 +48,6 @@ function processBadgeVariant(status: HookProcessInfo['status']) {
  * regardless of which page is mounted.
  */
 export function ProcessesPage() {
-  const navigate = useNavigate();
   const { processList, processOps, refreshProcesses } = useAppState();
   const { statusOf, banner: processActionStatus, load, unload, refresh } = processOps;
   const { pages, setPages } = useLayout();
@@ -193,11 +191,7 @@ export function ProcessesPage() {
                           disabled={busy}
                           onClick={() => {
                             const name = proc.name || `PID ${proc.pid}`;
-                            navigate({
-                              to: '/processes/vnc/$pid',
-                              params: { pid: String(proc.pid) },
-                              search: { processName: name },
-                            });
+                            window.location.href = `/processes/vnc/${proc.pid}?processName=${encodeURIComponent(name)}`;
                           }}
                         >
                           <Monitor className="size-3.5" /> 远程桌面

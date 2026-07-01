@@ -3,12 +3,12 @@ import { RouterProvider } from '@tanstack/react-router';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { SessionProvider } from '@/contexts/SessionContext';
+import { DebugTaskProvider } from '@/contexts/DebugTaskContext';
+import { TaskBadge } from '@/components/debug/task-badge';
 import { LoginPage } from '@/components/pages/login-page';
 import { ChangePasswordPage } from '@/components/pages/change-password-page';
 import { ConsentPage } from '@/components/pages/consent-page';
 import { ApiProvider, createApiClient, useApi, type ApiClient } from '@/lib/api';
-import { DebugTaskProvider } from '@/contexts/DebugTaskContext';
-import { TaskBadge } from '@/components/debug/task-badge';
 import type { AgreementsPayload } from '@/lib/api/types';
 import { appRouter } from '@/router';
 
@@ -127,17 +127,17 @@ function AuthBoundary() {
   } else {
     view = (
       <SessionProvider value={{ status, onLogoutComplete: handleLoggedOut }}>
-        <RouterProvider router={appRouter} />
+        <DebugTaskProvider>
+          <RouterProvider router={appRouter} />
+          <TaskBadge />
+        </DebugTaskProvider>
       </SessionProvider>
     );
   }
 
   return (
     <ApiProvider client={client}>
-      <DebugTaskProvider>
-        <TooltipProvider delayDuration={150}>{view}</TooltipProvider>
-        <TaskBadge />
-      </DebugTaskProvider>
+      <TooltipProvider delayDuration={150}>{view}</TooltipProvider>
     </ApiProvider>
   );
 }

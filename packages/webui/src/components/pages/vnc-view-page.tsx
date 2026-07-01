@@ -1,18 +1,23 @@
 import { useRef, useState } from 'react';
-import { getRouteApi, useNavigate } from '@tanstack/react-router';
 import { AlertCircle, ArrowLeft, Loader2, Monitor, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { VncViewer, type VncViewerHandle } from '@/components/vnc-viewer';
 import { VncPasswordDialog } from '@/components/vnc-password-dialog';
 
-const routeApi = getRouteApi('/app-layout/processes/vnc/$pid');
-
 type ConnStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+function getUrlParams() {
+  const parts = window.location.pathname.split('/');
+  // /processes/vnc/:pid
+  const raw = parts[3] ?? '';
+  const pid = /^\d+$/.test(raw) ? raw : '';
+  const search = new URLSearchParams(window.location.search);
+  const processName = search.get('processName') ?? undefined;
+  return { pid, processName };
+}
+
 export function VncViewPage() {
-  const navigate = useNavigate();
-  const { pid } = routeApi.useParams();
-  const { processName: rawName } = routeApi.useSearch();
+  const { pid, processName: rawName } = getUrlParams();
 
   const viewerRef = useRef<VncViewerHandle>(null);
   const [connStatus, setConnStatus] = useState<ConnStatus>('connecting');
@@ -28,7 +33,7 @@ export function VncViewPage() {
       style={{ margin: '-1.25rem -1rem', width: 'calc(100% + 2rem)', height: 'calc(100dvh - 48px)' }}
     >
       <div className="flex items-center gap-3 px-4 pb-3 shrink-0">
-        <Button variant="ghost" size="sm" onClick={() => navigate({ to: '/processes' })}>
+        <Button variant="ghost" size="sm" onClick={() => window.history.back()}>
           <ArrowLeft className="size-4" /> 返回
         </Button>
         <div className="flex items-center gap-2 text-sm font-medium">

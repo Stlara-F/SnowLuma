@@ -1,13 +1,12 @@
-import { Bug, Check, Eye, EyeOff, GripVertical, LayoutDashboard, Lock, Pin, PinOff, PlugZap, Settings, Sparkles, SlidersHorizontal, Terminal } from 'lucide-react';
-import { motion, Reorder } from 'motion/react';
-import { Link, useRouterState } from '@tanstack/react-router';
+import { useState, useCallback, useRef } from 'react';
+import { Bug, LayoutDashboard, PlugZap, Settings, Terminal, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { APP_NAME, APP_VERSION } from '@/types';
 import { useAppState } from '@/contexts/AppStateContext';
-import { useTheme } from '@/contexts/ThemeContext';
 import { reconcileLayoutItems, useLayout } from '@/contexts/LayoutContext';
-import { useMediaQuery } from '@/hooks/use-media-query';
+import { SidebarDropdown } from '@/components/layout/sidebar-dropdown';
+import { useTabs } from '@/contexts/TabContext';
 import type { AppPath } from '@/router';
 
 export interface NavItem {
@@ -26,219 +25,199 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/settings', label: '系统设置', icon: SlidersHorizontal, description: '主题与账号' },
 ];
 
-// Anti-self-lock: these nav items can be reordered but never hidden.
-//   '/'        — hosts the 「编辑布局」 entry point; hiding it would strand the
-//                user with no way back to un-hide anything.
-//   '/settings'— account + appearance.
 export const PINNED_NAV: AppPath[] = ['/', '/settings'];
 
+/** Horizontal menu items for the title bar (overview excluded — persistent in right 1/4). */
+const TITLEBAR_MENUS = [
+  { id: 'processes', label: '进程注入', icon: PlugZap },
+  { id: 'config', label: '节点配置', icon: Settings },
+  { id: 'logs', label: '日志', icon: Terminal },
+  { id: 'debug', label: '调试', icon: Bug },
+  { id: 'settings', label: '系统设置', icon: SlidersHorizontal },
+] as const;
+
+/** Ms to wait before closing dropdown after mouse leaves both trigger and panel. */
+const CLOSE_DELAY_MS = 150;
+
 interface SidebarProps {
-  collapsed?: boolean;
+  /** Desktop: fixed title bar mode. Mobile: full nav in Sheet. */
+  mode?: 'titlebar' | 'full';
   onItemClick?: () => void;
 }
 
-export function Sidebar({ collapsed = false, onItemClick }: SidebarProps) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+/**
+ * Sidebar component.
+ * - `mode="titlebar"` (default): Fixed 48px title bar with horizontal menu + dropdown.
+ *   Used in the desktop top row.
+ * - `mode="full"`: Full navigation list. Used in the mobile Sheet.
+ */
+export function Sidebar({ mode = 'titlebar', onItemClick }: SidebarProps) {
   const { updateInfo } = useAppState();
-  const { navItems, setNavItems, editing, setEditing } = useLayout();
-  const { appearance, setAppearance } = useTheme();
-  const isDesktop = useMediaQuery('(min-width: 768px)');
-  const pinned = appearance.sidebarPinned;
+  const { openTab } = useTabs();
+  const { navItems } = useLayout();
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Full reconciled nav (incl. hidden) — pinned forced visible, forward-compat.
-  const reconciled = reconcileLayoutItems(navItems, NAV_ITEMS.map((i) => i.to), PINNED_NAV);
-  // View mode: configured order, hidden removed.
-  const orderedNav = reconciled
-    .filter((i) => i.visible)
-    .map((i) => NAV_ITEMS.find((n) => n.to === i.id))
-    .filter((n): n is NavItem => !!n);
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
 
-  const reorderNav = (ids: string[]) => {
-    const byId = new Map(reconciled.map((i) => [i.id, i]));
-    setNavItems(ids.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x));
-  };
-  const toggleNav = (id: string) =>
-    setNavItems(reconciled.map((i) => (i.id === id ? { ...i, visible: !i.visible } : i)));
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer();
+    closeTimerRef.current = setTimeout(() => {
+      setActiveMenuId(null);
+      closeTimerRef.current = null;
+    }, CLOSE_DELAY_MS);
+  }, [clearCloseTimer]);
 
-  return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-sidebar text-sidebar-foreground">
-      {/* Brand — logo sits in a fixed 48px column centred in the collapsed
-          rail; the wordmark to its right is clipped (never unmounted) when the
-          rail narrows. */}
-      <div className="flex h-16 shrink-0 items-center px-2">
-        <div className="grid w-12 shrink-0 place-items-center">
-          <div className="relative flex size-9 items-center justify-center overflow-hidden rounded-xl bg-primary/10 ring-1 ring-primary/20">
-            <img src="/logo.png" alt="SnowLuma" className="size-7 object-contain" />
+  const handleMenuEnter = useCallback((menuId: string) => {
+    clearCloseTimer();
+    setActiveMenuId(menuId);
+  }, [clearCloseTimer]);
+
+  const handleMenuLeave = useCallback(() => {
+    scheduleClose();
+  }, [scheduleClose]);
+
+  const handleDropdownEnter = useCallback(() => {
+    clearCloseTimer();
+  }, [clearCloseTimer]);
+
+  const handleDropdownLeave = useCallback(() => {
+    scheduleClose();
+  }, [scheduleClose]);
+
+  // ─── Title bar mode (desktop) ──────────────────────────────────────────
+  if (mode === 'titlebar') {
+    return (
+      <div className="relative z-40 flex h-full w-full items-center bg-sidebar text-sidebar-foreground">
+        {/* Brand (fixed width) */}
+        <div className="flex h-12 shrink-0 items-center gap-2.5 px-4">
+          <div className="relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-primary/10 ring-1 ring-primary/20">
+            <img src="/logo.png" alt="SnowLuma" className="size-6 object-contain" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-sm font-bold tracking-tight">{APP_NAME}</span>
+              <span className="text-[10px] font-medium text-muted-foreground tabular-nums">v{APP_VERSION}</span>
+            </div>
           </div>
         </div>
-        <div className={cn('min-w-0 flex-1 overflow-hidden pr-2 transition-opacity duration-200', collapsed ? 'opacity-0' : 'opacity-100')}>
-          <div className="flex items-baseline gap-1.5 whitespace-nowrap">
+
+        {/* Separator */}
+        <div className="mx-1 h-6 w-px shrink-0 bg-border" />
+
+        {/* Horizontal menu items — each wraps its own dropdown */}
+        <nav className="flex h-full items-center gap-1 px-2">
+          {TITLEBAR_MENUS.map((menu) => {
+            const Icon = menu.icon;
+            const isActive = activeMenuId === menu.id;
+            return (
+              <div
+                key={menu.id}
+                className="relative h-full flex items-center"
+                onMouseEnter={() => handleMenuEnter(menu.id)}
+                onMouseLeave={handleMenuLeave}
+              >
+                <button
+                  type="button"
+                  className={cn(
+                    'flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors cursor-pointer',
+                    isActive
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground',
+                  )}
+                >
+                  <Icon className="size-3.5 shrink-0" />
+                  <span className="whitespace-nowrap">{menu.label}</span>
+                </button>
+
+                {/* Dropdown panel — positioned directly below this menu item (no gap) */}
+                <SidebarDropdown
+                  menuId={menu.id}
+                  open={isActive}
+                  onClose={() => setActiveMenuId(null)}
+                  onMouseEnter={handleDropdownEnter}
+                  onMouseLeave={handleDropdownLeave}
+                />
+              </div>
+            );
+          })}
+        </nav>
+
+        {/* Update info indicator */}
+        {updateInfo?.hasUpdate && (
+          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary/50" />
+        )}
+      </div>
+    );
+  }
+
+  // ─── Full nav mode (mobile Sheet) ──────────────────────────────────────
+  return (
+    <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
+      {/* Brand */}
+      <div className="flex h-16 items-center gap-3 px-4">
+        <div className="relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-primary/10 ring-1 ring-primary/20">
+          <img src="/logo.png" alt="SnowLuma" className="size-7 object-contain" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-bold tracking-tight">{APP_NAME}</span>
             <span className="text-[10px] font-medium text-muted-foreground tabular-nums">v{APP_VERSION}</span>
           </div>
-          <span className="block whitespace-nowrap text-[10px] text-muted-foreground">OneBot v11 控制台</span>
+          <span className="text-[10px] text-muted-foreground">OneBot v11 控制台</span>
         </div>
       </div>
 
       {/* Nav */}
       <ScrollArea className="flex-1 min-h-0" viewportClassName="[&>div]:!block">
-        {editing ? (
-          <div className="flex flex-col gap-2 p-2">
-            <div className="flex items-center justify-between px-1">
-              <span className="text-[11px] font-medium text-muted-foreground">编辑导航</span>
+        <nav className="flex flex-col gap-1 p-2">
+          {(() => {
+            const reconciled = reconcileLayoutItems(navItems, NAV_ITEMS.map((i) => i.to), PINNED_NAV);
+            const orderedNav = reconciled
+              .filter((i) => i.visible)
+              .map((i) => NAV_ITEMS.find((n) => n.to === i.id))
+              .filter((n): n is NavItem => !!n);
+            return orderedNav.map(({ to, label, icon: Icon, description }) => (
               <button
+                key={to}
                 type="button"
-                onClick={() => setEditing(false)}
-                className="inline-flex items-center gap-1 rounded-md bg-primary/15 px-2 py-0.5 text-[11px] text-primary transition-colors hover:bg-primary/20 cursor-pointer"
+                onClick={onItemClick}
+                className="group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground cursor-pointer"
               >
-                <Check className="size-3" /> 完成
+                <Icon className="relative z-10 size-4 shrink-0" />
+                <span className="relative z-10 flex min-w-0 flex-1 flex-col items-start">
+                  <span className="truncate leading-tight">{label}</span>
+                  <span className="text-[10px] font-normal text-muted-foreground truncate">{description}</span>
+                </span>
               </button>
-            </div>
-            <Reorder.Group axis="y" values={reconciled.map((i) => i.id)} onReorder={reorderNav} className="flex flex-col gap-1">
-              {reconciled.map((item) => {
-                const meta = NAV_ITEMS.find((n) => n.to === item.id);
-                if (!meta) return null;
-                const Icon = meta.icon;
-                const itemPinned = (PINNED_NAV as string[]).includes(item.id);
-                return (
-                  <Reorder.Item
-                    key={item.id}
-                    value={item.id}
-                    className={cn(
-                      'flex select-none items-center gap-2 rounded-lg bg-sidebar-accent/40 px-2 py-2 cursor-grab active:cursor-grabbing',
-                      !item.visible && 'opacity-50',
-                    )}
-                  >
-                    <GripVertical className="size-3.5 shrink-0 text-muted-foreground" />
-                    <Icon className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate text-sm">{meta.label}</span>
-                    {itemPinned ? (
-                      <span title="必选项，不可隐藏" className="inline-flex size-7 items-center justify-center text-muted-foreground/50">
-                        <Lock className="size-3.5" />
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => toggleNav(item.id)}
-                        title={item.visible ? '隐藏' : '显示'}
-                        aria-label={item.visible ? '隐藏' : '显示'}
-                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-foreground cursor-pointer"
-                      >
-                        {item.visible ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
-                      </button>
-                    )}
-                  </Reorder.Item>
-                );
-              })}
-            </Reorder.Group>
-          </div>
-        ) : (
-          <nav className="flex flex-col gap-1 px-2 py-2">
-            {orderedNav.map(({ to, label, icon: Icon, description }) => {
-              const isActive = pathname === to;
-              return (
-                <Link
-                  key={to}
-                  to={to}
-                  title={collapsed ? label : undefined}
-                  onClick={onItemClick}
-                  aria-current={isActive ? 'page' : undefined}
-                  className={cn(
-                    'group relative flex items-center rounded-lg py-2.5 text-sm font-medium transition-colors cursor-pointer outline-none',
-                    isActive
-                      ? 'text-sidebar-accent-foreground'
-                      : 'text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground',
-                  )}
-                >
-                  {isActive && (
-                    <>
-                      {/* Highlight geometry is the ONLY thing that switches on
-                          collapse: a full-row pill when open, a centred squircle
-                          on the rail. Both are absolutely positioned, so they
-                          morph (layout) without reflowing the row. */}
-                      <motion.span
-                        layoutId="sidebar-active-pill"
-                        className={cn(
-                          'absolute inset-y-0 rounded-lg bg-sidebar-accent',
-                          collapsed ? 'left-0.5 w-11' : 'inset-x-0',
-                        )}
-                        transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-                      />
-                      {!collapsed && (
-                        <motion.span
-                          layoutId="sidebar-active-bar"
-                          className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-primary"
-                          transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-                        />
-                      )}
-                    </>
-                  )}
-                  <span className="relative z-10 grid w-12 shrink-0 place-items-center">
-                    <Icon className={cn('size-4', isActive && 'text-primary')} />
-                  </span>
-                  <span className={cn('relative z-10 flex min-w-0 flex-1 flex-col items-start overflow-hidden pr-3 transition-opacity duration-200', collapsed ? 'opacity-0' : 'opacity-100')}>
-                    <span className="w-full truncate whitespace-nowrap leading-tight">{label}</span>
-                    <span className="w-full truncate whitespace-nowrap text-[10px] font-normal text-muted-foreground">{description}</span>
-                  </span>
-                </Link>
-              );
-            })}
-          </nav>
-        )}
+            ));
+          })()}
+        </nav>
       </ScrollArea>
 
       {updateInfo?.hasUpdate && (
-        <div className="shrink-0 px-2 pb-1">
-          <Link
-            to="/settings"
-            search={{ tab: 'about' }}
-            onClick={onItemClick}
-            title={collapsed ? (updateInfo.latest ? `有新版本 v${updateInfo.latest} · 点击查看` : '有可用更新') : undefined}
-            aria-label="有可用更新"
-            className="group relative flex items-center py-2"
-          >
-            {/* Background as an absolute layer so the collapsed rail shows a
-                centred squircle, not a full-width bar cut off with a hard edge. */}
-            <span
-              className={cn(
-                'absolute inset-y-0 rounded-lg bg-primary/10 transition-colors group-hover:bg-primary/[0.15]',
-                collapsed ? 'left-0.5 w-11' : 'inset-x-0',
-              )}
-            />
-            <span className="relative z-10 grid w-12 shrink-0 place-items-center"><Sparkles className="size-4 text-primary" /></span>
-            <span className={cn('relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden pr-3 transition-opacity duration-200', collapsed ? 'opacity-0' : 'opacity-100')}>
-              <span className="truncate whitespace-nowrap text-xs font-medium leading-tight text-foreground">有新版本可用</span>
-              <span className="truncate whitespace-nowrap text-[10px] text-muted-foreground">v{updateInfo.latest} · 点击查看</span>
-            </span>
-          </Link>
-        </div>
-      )}
-
-      {/* Footer: © + the pin toggle (desktop only). Pinning keeps the rail
-          expanded; unpinning returns it to the hover-to-peek rail. Mirrors the
-          「钉住侧栏展开」 appearance setting. */}
-      <div className={cn('flex shrink-0 items-center gap-2 py-3 pl-4 pr-2.5 transition-opacity duration-200', collapsed ? 'opacity-0' : 'opacity-100')}>
-        <span className="min-w-0 flex-1 truncate whitespace-nowrap text-[10px] text-muted-foreground">
-          © {new Date().getFullYear()} SnowLuma
-        </span>
-        {isDesktop && (
+        <div className="px-2 pt-2">
           <button
             type="button"
-            onClick={() => setAppearance({ sidebarPinned: !pinned })}
-            title={pinned ? '取消钉住（恢复悬停展开）' : '钉住侧栏（保持展开）'}
-            aria-label={pinned ? '取消钉住侧栏' : '钉住侧栏'}
-            aria-pressed={pinned}
-            tabIndex={collapsed ? -1 : 0}
-            className={cn(
-              'inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors cursor-pointer outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40',
-              pinned
-                ? 'bg-primary/10 text-primary hover:bg-primary/15'
-                : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground',
-            )}
+            onClick={() => openTab('settings')}
+            title={updateInfo.latest ? `有新版本 v${updateInfo.latest}` : '有可用更新'}
+            className="group relative flex w-full items-center gap-2.5 rounded-lg bg-primary/[0.1] px-3 py-2 cursor-pointer text-left transition-colors hover:bg-primary/[0.15]"
           >
-            {pinned ? <Pin className="size-3.5" /> : <PinOff className="size-3.5" />}
+            <Sparkles className="size-4 shrink-0 text-primary" />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="text-xs font-medium leading-tight text-foreground">有新版本可用</span>
+              <span className="truncate text-[10px] text-muted-foreground">v{updateInfo.latest}</span>
+            </span>
           </button>
-        )}
+        </div>
+      )}
+      <div className="px-4 py-3 text-[10px] text-muted-foreground">
+        {`© ${new Date().getFullYear()} SnowLuma`}
       </div>
     </div>
   );

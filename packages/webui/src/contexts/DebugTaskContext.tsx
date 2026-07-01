@@ -1,8 +1,3 @@
-// DebugTaskContext — an app-level registry of in-flight debug-console tasks
-// (file uploads, streaming invocations) so they survive tab/page switches
-// WITHIN the app (their state lives above the page, not in the unmounting tab).
-// A full page unload (refresh / close) can't be survived, so a beforeunload
-// guard warns while any task runs. Finished tasks linger briefly for history.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 export type DebugTaskStatus = 'running' | 'done' | 'failed' | 'canceled';
@@ -13,21 +8,17 @@ export interface DebugTask {
   kind: DebugTaskKind;
   label: string;
   status: DebugTaskStatus;
-  /** 0..1 when determinate; undefined = indeterminate. */
   progress?: number;
   detail?: string;
   startedAt: number;
   endedAt?: number;
-  /** Cancel the underlying work (abort the fetch / xhr). */
   cancel?: () => void;
 }
 
 interface DebugTaskContextValue {
   tasks: DebugTask[];
-  /** Register a task; returns its id. */
   start: (task: Omit<DebugTask, 'id' | 'status' | 'startedAt'> & { id?: string }) => string;
   update: (id: string, patch: Partial<Omit<DebugTask, 'id'>>) => void;
-  /** Mark terminal (done/failed/canceled) and stamp endedAt. */
   finish: (id: string, status: Exclude<DebugTaskStatus, 'running'>, detail?: string) => void;
   remove: (id: string) => void;
   clearFinished: () => void;
@@ -46,8 +37,6 @@ export function DebugTaskProvider({ children }: { children: ReactNode }) {
     setTasks((prev) => {
       const next = [{ ...t, id, status: 'running' as const, startedAt: Date.now() }, ...prev];
       if (next.length <= 50) return next;
-      // Over cap: evict the OLDEST finished tasks only — never drop a running
-      // task (that would orphan its finish()/cancel handle while it keeps going).
       const running = next.filter((x) => x.status === 'running').length;
       const finished = next.filter((x) => x.status !== 'running');
       const drop = new Set(finished.slice(Math.max(0, 50 - running)).map((x) => x.id));
@@ -72,8 +61,6 @@ export function DebugTaskProvider({ children }: { children: ReactNode }) {
     setTasks((prev) => prev.filter((t) => t.status === 'running'));
   }, []);
 
-  // beforeunload guard: a real page unload kills in-flight tasks, so warn while
-  // any task is still running (within-app navigation is safe — state is here).
   useEffect(() => {
     const anyRunning = tasks.some((t) => t.status === 'running');
     if (!anyRunning) return;
@@ -95,7 +82,6 @@ export function useDebugTasks(): DebugTaskContextValue {
   return v;
 }
 
-/** Convenience: count + aggregate progress of running tasks, for the badge. */
 export function useRunningTaskSummary(): { count: number; progress: number | null } {
   const { tasks } = useDebugTasks();
   return useMemo(() => {
