@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import {
   Accessibility, AlertTriangle, Bell, Bug, Check, Clock, Code2, Download, ExternalLink, Github, Image as ImageIcon,
   Info, KeyRound, Loader2, Monitor, Moon, Palette, PanelTop, Plus, RefreshCw, RotateCcw, Server, ShieldCheck,
-  SlidersHorizontal, Sparkles, Star, Sun, Tag, Upload, Trash2,
+  Sparkles, Star, Sun, Tag, Upload, Trash2,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -40,76 +40,42 @@ import { ConfirmDialog } from '@/components/confirm-dialog';
 import { useApi } from '@/lib/api';
 import { useAppState } from '@/contexts/AppStateContext';
 import { cn } from '@/lib/utils';
-import { settingsRoute, type SettingsTab } from '@/router';
 import { NotificationsPanel } from '@/components/settings/notifications-panel';
-import { GlobalConfigPanel } from '@/components/settings/global-config-panel';
 import { SystemPanel } from '@/components/settings/system-panel';
 
-interface TabDef { key: SettingsTab; label: string; icon: typeof Sun }
-
-// Three domains, rendered as macOS System-Settings-style sidebar sections:
-// the dashboard itself (控制台), the all-accounts SnowLuma protocol runtime,
-// and the host/deployment (平台). Section headers show on the desktop rail
-// only; the mobile strip stays a flat wrap.
-const TAB_GROUPS: { title: string; tabs: TabDef[] }[] = [
-  {
-    title: '控制台',
-    tabs: [
-      { key: 'appearance', label: '外观', icon: Palette },
-      { key: 'data', label: '数据与格式', icon: RefreshCw },
-      { key: 'account', label: '账号安全', icon: ShieldCheck },
-    ],
-  },
-  {
-    title: 'SnowLuma',
-    tabs: [
-      { key: 'globalConfig', label: '全局配置', icon: SlidersHorizontal },
-      { key: 'notifications', label: '通知', icon: Bell },
-    ],
-  },
-  {
-    title: '平台',
-    tabs: [
-      { key: 'system', label: '服务', icon: Server },
-      { key: 'advanced', label: '高级', icon: Code2 },
-      { key: 'about', label: '关于', icon: Info },
-    ],
-  },
+const TABS: { key: string; label: string; icon: typeof Sun }[] = [
+  { key: 'appearance', label: '外观', icon: Palette },
+  { key: 'data', label: '数据与格式', icon: RefreshCw },
+  { key: 'advanced', label: '高级', icon: Code2 },
+  { key: 'account', label: '账号安全', icon: ShieldCheck },
+  { key: 'system', label: '服务', icon: Server },
+  { key: 'notifications', label: '通知', icon: Bell },
+  { key: 'about', label: '关于', icon: Info },
 ];
 
-const TABS: TabDef[] = TAB_GROUPS.flatMap((g) => g.tabs);
-
 export function SettingsPage() {
-  // Active tab lives in the URL (`?tab=`) so it's deep-linkable — e.g. the
-  // sidebar update banner jumps straight to 关于. Default tab omits the param.
-  const { tab: urlTab } = settingsRoute.useSearch();
-  const navigate = settingsRoute.useNavigate();
-  const tab: SettingsTab = urlTab ?? 'appearance';
-  const setTab = (t: SettingsTab) =>
-    void navigate({ to: '/settings', search: t === 'appearance' ? {} : { tab: t }, replace: true });
-  const active = TABS.find((t) => t.key === tab);
+  const [activeTab, setActiveTab] = useState('about');
 
   return (
     <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-6">
-      <SettingsNav tab={tab} onChange={setTab} />
+      <SettingsNav tab={activeTab} onChange={setActiveTab} />
 
       <div className="min-w-0 flex-1">
         <motion.div
-          key={tab}
+          key={activeTab}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           className="flex flex-col gap-5"
         >
-          <h2 className="px-0.5 text-base font-semibold tracking-tight">{active?.label}</h2>
-          {tab === 'appearance' && <AppearancePanel />}
-          {tab === 'data' && <DataPanel />}
-          {tab === 'advanced' && <AdvancedPanel />}
-          {tab === 'account' && <AccountPanel />}
-          {tab === 'system' && <SystemPanel />}
-          {tab === 'notifications' && <NotificationsPanel />}
-          {tab === 'globalConfig' && <GlobalConfigPanel />}
-          {tab === 'about' && <AboutPanel />}
+          <h2 className="px-0.5 text-base font-semibold tracking-tight">{TABS.find((t) => t.key === activeTab)?.label}</h2>
+          {activeTab === 'appearance' && <AppearancePanel />}
+          {activeTab === 'data' && <DataPanel />}
+          {activeTab === 'advanced' && <AdvancedPanel />}
+          {activeTab === 'account' && <AccountPanel />}
+          {activeTab === 'system' && <SystemPanel />}
+          {activeTab === 'notifications' && <NotificationsPanel />}
+          {activeTab === 'about' && <AboutPanel />}
         </motion.div>
       </div>
     </div>
@@ -118,54 +84,35 @@ export function SettingsPage() {
 
 // ─────────────── nav: sticky rail (desktop) / scroll strip (mobile) ───────────────
 
-function SettingsNav({ tab, onChange }: { tab: SettingsTab; onChange: (t: SettingsTab) => void }) {
+function SettingsNav({ tab, onChange }: { tab: string; onChange: (t: string) => void }) {
   return (
     <nav
-      aria-label="设置导航"
       className={cn(
         'flex flex-wrap gap-1 rounded-xl border bg-card p-1.5',
         'lg:w-52 lg:shrink-0 lg:flex-col lg:flex-nowrap lg:self-start lg:sticky lg:top-4 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto',
       )}
     >
-      {TAB_GROUPS.map((group, gi) => (
-        <div
-          key={group.title}
-          role="group"
-          aria-labelledby={`settings-nav-group-${gi}`}
-          className="contents lg:flex lg:flex-col lg:gap-1"
-        >
-          <p
-            id={`settings-nav-group-${gi}`}
+      {TABS.map((t) => {
+        const Icon = t.icon;
+        const selected = tab === t.key;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onChange(t.key)}
+            aria-current={selected ? 'page' : undefined}
             className={cn(
-              'hidden select-none px-3 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 lg:block',
-              gi === 0 ? 'lg:pt-1' : 'lg:pt-3',
+              'inline-flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors cursor-pointer outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40 lg:w-full',
+              selected
+                ? 'bg-accent text-foreground ring-1 ring-primary/20'
+                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
             )}
           >
-            {group.title}
-          </p>
-          {group.tabs.map((t) => {
-            const Icon = t.icon;
-            const active = tab === t.key;
-            return (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => onChange(t.key)}
-                aria-current={active ? 'page' : undefined}
-                className={cn(
-                  'inline-flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors cursor-pointer outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40 lg:w-full',
-                  active
-                    ? 'bg-accent text-foreground ring-1 ring-primary/20'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-                )}
-              >
-                <Icon className={cn('size-4 shrink-0', active && 'text-primary')} />
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
-      ))}
+            <Icon className={cn('size-4 shrink-0', selected && 'text-primary')} />
+            {t.label}
+          </button>
+        );
+      })}
     </nav>
   );
 }

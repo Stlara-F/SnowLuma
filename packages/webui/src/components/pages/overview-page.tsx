@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { motion, Reorder } from 'motion/react';
-import { Link } from '@tanstack/react-router';
 import {
   Activity, ArrowRight, Bell, Cable, Check, Cpu, ExternalLink, Eye, EyeOff, GripVertical,
   LayoutGrid, MemoryStick, MonitorCog, Pencil, Plus, PlugZap, RefreshCw, RotateCcw, Server,
@@ -22,6 +21,7 @@ import { useSession } from '@/contexts/SessionContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { reconcileLayoutItems, useLayout } from '@/contexts/LayoutContext';
 import { useMediaQuery } from '@/hooks/use-media-query';
+import { useTabNavigate } from '@/hooks/use-tab-navigate';
 import {
   CONFIGURABLE_WIDGETS, GRID_COLS, GRID_WIDGETS, HIDDEN_BY_DEFAULT_IDS, MOBILE_WIDGET_IDS, mobileHeightOf,
   parseAccountConfig, parseAlertsConfig, parseConnectionsConfig, parseHostConfig,
@@ -64,6 +64,7 @@ export function OverviewPage() {
   } = useLayout();
   const off = useTheme().appearance.disableMotion;
   const isWide = useMediaQuery('(min-width: 768px)');
+  const { navigateTo } = useTabNavigate();
   // Free-grid 2D editing is desktop-only; on a phone, editing surfaces a
   // single-column drag-sort panel (overviewMobile) instead.
   const [configId, setConfigId] = useState<string | null>(null);
@@ -148,9 +149,10 @@ export function OverviewPage() {
       {/* First-run nudge — always shown (not a grid widget) so it can't be hidden. */}
       {qqList.length === 0 && (
         <motion.div initial={off ? false : { opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}>
-          <Link
-            to="/processes"
-            className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 transition-colors hover:bg-primary/10"
+          <button
+            type="button"
+            onClick={() => navigateTo('/processes')}
+            className="flex items-center gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 transition-colors hover:bg-primary/10 cursor-pointer"
           >
             <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
               <PlugZap className="size-5" />
@@ -164,7 +166,7 @@ export function OverviewPage() {
               </p>
             </div>
             <ArrowRight className="size-4 shrink-0 text-primary" />
-          </Link>
+          </button>
         </motion.div>
       )}
 
@@ -418,6 +420,7 @@ function StatTile({
   accent?: boolean;
   to?: AppPath;
 }) {
+  const { navigateTo } = useTabNavigate();
   const body = (
     <CardContent className="flex h-full items-center gap-3 overflow-hidden px-4 py-3.5">
       <div
@@ -438,9 +441,9 @@ function StatTile({
   );
   if (to) {
     return (
-      <Link to={to} className="block h-full rounded-xl outline-none">
+      <button type="button" onClick={() => navigateTo(to)} className="block h-full rounded-xl outline-none text-left">
         <Card className="h-full overflow-hidden transition-colors hover:border-primary/40 hover:bg-accent/30">{body}</Card>
-      </Link>
+      </button>
     );
   }
   return <Card className="h-full overflow-hidden">{body}</Card>;
@@ -901,6 +904,7 @@ const ALERT_LEVEL_CLASS: Record<LogLevel, string> = {
 function RecentAlertsCard({ config }: { config: AlertsConfig }) {
   const api = useApi();
   const { formatClock } = useTheme();
+  const { navigateTo } = useTabNavigate();
   const [alerts, setAlerts] = useState<LogEntry[]>([]);
   const { count } = config;
   const levelsKey = config.levels.join(',');
@@ -933,9 +937,9 @@ function RecentAlertsCard({ config }: { config: AlertsConfig }) {
           </CardTitle>
           <CardDescription>最近 {count} 条 · {config.levels.map((l) => l.toUpperCase()).join(' / ')}</CardDescription>
         </div>
-        <Link to="/logs" className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+        <button type="button" onClick={() => navigateTo('/logs')} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer">
           查看日志 <ArrowRight className="size-3" />
-        </Link>
+        </button>
       </CardHeader>
       <CardContent className="min-h-0 flex-1 overflow-auto">
         {alerts.length === 0 ? (

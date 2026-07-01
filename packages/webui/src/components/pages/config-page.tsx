@@ -39,8 +39,29 @@ type DialogState =
   | { open: true; kind: NetworkKind; index: number | null; seed: OneBotNetworks[NetworkKind][number] };
 //   index: null → create with `seed`, otherwise edit the item at that position.
 
-export function ConfigPage() {
-  const { qqList, connections, selectedUin, setSelectedUin } = useAppState();
+interface ConfigPageProps {
+  /** When provided, this config tab is locked to this specific UIN (multi-tab support). */
+  configUin?: string;
+  /** Display label for the tab, e.g. "节点配置 - Bot001". */
+  configLabel?: string;
+}
+
+export function ConfigPage({ configUin: propConfigUin }: ConfigPageProps = {}) {
+  const { qqList, connections, selectedUin: globalUin, setSelectedUin } = useAppState();
+
+  // Per-tab UIN: if prop is provided, use local state; otherwise fall back to global.
+  const [localUin, setLocalUin] = useState<string | null>(propConfigUin ?? null);
+  const effectiveUin = propConfigUin ?? localUin ?? globalUin;
+
+  const handleUinChange = useCallback((uin: string | null) => {
+    if (propConfigUin) {
+      // Per-tab mode: only update local state, don't touch global.
+      setLocalUin(uin);
+    } else {
+      setSelectedUin(uin);
+    }
+  }, [propConfigUin, setSelectedUin]);
+
   const {
     config,
     setConfig,
@@ -52,8 +73,8 @@ export function ConfigPage() {
     save,
     saveStatus,
   } = useOneBotInstanceConfig(qqList, {
-    selectedUin,
-    onSelectedUinChange: setSelectedUin,
+    selectedUin: effectiveUin,
+    onSelectedUinChange: handleUinChange,
   });
 
   const { pages, setPages } = useLayout();
@@ -84,11 +105,11 @@ export function ConfigPage() {
   // Live adapter status for the selected account, keyed by adapter name so
   // each summary card can light up its real connection state.
   const liveStatusByName = useMemo(() => {
-    const acc = connections.find((c) => c.uin === selectedUin);
+    const acc = connections.find((c) => c.uin === effectiveUin);
     const map = new Map<string, AdapterStatus>();
     for (const a of acc?.adapters ?? []) map.set(a.name, a);
     return map;
-  }, [connections, selectedUin]);
+  }, [connections, effectiveUin]);
 
   // Auto-save general settings with debounce. Network mutations
   // (create / edit / delete / enable-toggle) persist immediately in commitKind.
@@ -168,23 +189,25 @@ export function ConfigPage() {
 
   return (
     <div className="flex gap-4">
-      <AccountSidebar
-        accounts={qqList}
-        selectedUin={selectedUin}
-        onSelect={requestSwitchUin}
-        collapsed={sidebarCollapsed}
-        onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
-      />
+      {!propConfigUin && (
+        <AccountSidebar
+          accounts={qqList}
+          selectedUin={effectiveUin}
+          onSelect={requestSwitchUin}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+        />
+      )}
 
       <div className="min-w-0 flex-1">
-        {!selectedUin ? (
+        {!effectiveUin ? (
           <EmptyState />
         ) : !config ? (
           <LoadingSkeleton />
         ) : (
           <div className="flex flex-col gap-4">
             <HeaderBar
-              selectedUin={selectedUin}
+              selectedUin={effectiveUin}
               dirty={dirty}
               saveStatus={saveStatus}
               onSave={immediateSave}
@@ -240,7 +263,7 @@ export function ConfigPage() {
         description={
           <>
             <p>
-              当前会话 <code className="font-mono">{selectedUin}</code> 还有未保存的修改。
+              当前会话 <code className="font-mono">{effectiveUin}</code> 还有未保存的修改。
             </p>
             <p className="mt-2">
               切换到 <code className="font-mono">{pendingSwitchAccount?.uin ?? pendingSwitchUin}</code>
