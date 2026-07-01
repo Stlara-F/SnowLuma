@@ -1,28 +1,34 @@
+import { lazy, Suspense } from 'react';
 import {
   createRootRoute,
-  createRoute,
   createRouter,
 } from '@tanstack/react-router';
 import { AppLayout } from './app-layout';
 import { ErrorPage, NotFoundPage } from '@/components/pages/status-screens';
 
-// ─── Simplified route tree ───────────────────────────────────────────────────
-// In the tab-based architecture, child page routes are removed.
-// WorkspaceView handles tab content rendering internally.
-// Only the root → appLayoutRoute remains for the auth/layout shell.
-// The settings route types are kept for deep-linking compatibility.
+const VncViewPage = lazy(() =>
+  import('@/components/pages/vnc-view-page').then((m) => ({ default: m.VncViewPage })),
+);
+
+// ─── Route tree ──────────────────────────────────────────────────────────────
+// Main app renders through AppLayout (no child routes — tabs manage pages).
+// VNC view is handled by path detection: /processes/vnc/* loads VncViewPage
+// directly without the MainLayout shell.
 
 const rootRoute = createRootRoute({
-  component: () => <AppLayout />,
+  component: () => {
+    if (window.location.pathname.startsWith('/processes/vnc/')) {
+      return (
+        <Suspense fallback={<div className="flex h-screen items-center justify-center text-sm text-muted-foreground">加载中...</div>}>
+          <VncViewPage />
+        </Suspense>
+      );
+    }
+    return <AppLayout />;
+  },
 });
 
-const appLayoutRoute = createRoute({
-  id: 'app-layout',
-  getParentRoute: () => rootRoute,
-  component: AppLayout,
-});
-
-const routeTree = rootRoute.addChildren([appLayoutRoute]);
+const routeTree = rootRoute.addChildren([]);
 
 export const appRouter = createRouter({
   routeTree,
