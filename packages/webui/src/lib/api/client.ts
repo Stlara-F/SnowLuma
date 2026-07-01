@@ -12,6 +12,7 @@ import {
   type ProcessActionResult,
   type StateStreamEvent,
   type StateStreamOptions,
+  type StreamStatus,
   type TokenStore,
 } from './types';
 import { localStorageTokenStore } from './token-store';
@@ -77,9 +78,6 @@ class HttpApiClient implements ApiClient {
       },
       save: async (uin, config) => {
         const url = `/api/config/${encodeURIComponent(uin)}`;
-        // POST returns { success, reloaded, message } — no config body. To
-        // honour the "save returns canonical server view" contract, refetch
-        // after a successful POST.
         await this.fetchJson<unknown>(url, {
           method: 'POST',
           body: JSON.stringify(config),
@@ -137,17 +135,12 @@ class HttpApiClient implements ApiClient {
         return data.config;
       },
       getPublic: async () => {
-        // Pre-auth path: a plain fetch with no bearer. Used by the login page
-        // to theme itself before the operator has signed in.
         const res = await fetch('/api/ui/public');
         if (!res.ok) throw new ApiError(res.status, '无法获取外观配置');
         const data = await readJson<{ appearance: UiAppearance }>(res);
         return data.appearance;
       },
       uploadBackground: async (file) => {
-        // FormData must set its own multipart boundary, so this bypasses
-        // request() (which would force application/json) and attaches the
-        // bearer header directly — mirroring login()'s deliberate bypass.
         const form = new FormData();
         form.append('file', file);
         const headers: Record<string, string> = {};
@@ -193,10 +186,6 @@ class HttpApiClient implements ApiClient {
     this.agreements = {
       get: () => this.getJson<AgreementsPayload>('/api/agreements'),
       recordConsent: async (version) => {
-        // Read the body even on non-2xx so a 409 can surface currentVersion to
-        // the caller (instead of fetchJson throwing it away as an ApiError).
-        // A network failure (fetch reject) must resolve to {success:false}, not
-        // throw, or the consent button hangs on "提交中…" with no error shown.
         try {
           const res = await this.request('/api/agreements/record-consent', {
             method: 'POST',
@@ -258,8 +247,6 @@ class HttpApiClient implements ApiClient {
   // ---------- auth ----------
 
   async login(password: string): Promise<LoginResult> {
-    // Login deliberately bypasses fetchJson/onUnauthorized so a bad password
-    // doesn't trigger a global sign-out side effect.
     try {
       const res = await fetch('/api/login', {
         method: 'POST',
@@ -347,64 +334,47 @@ class HttpApiClient implements ApiClient {
   }
 
   stateStream(options: StateStreamOptions): () => void {
-    if (!this.currentToken) { options.onStatus?.('closed'); return () => {}; }
-    const url = `/api/state/stream?token=${encodeURIComponent(this.currentToken)}`;
-    const source = new EventSource(url);
-    // EventSource auto-reconnects on transport drop: `onerror` fires once
-    // when the connection is lost and the browser is about to retry, so
-    // a single 'reconnecting' status is sufficient — no manual reconnect
-    // timer needed.
-    source.onopen = () => options.onStatus?.('open');
-    source.onerror = () => options.onStatus?.('reconnecting');
-    source.onmessage = (event) => {
-      try {
-        options.onEvent(JSON.parse(event.data) as StateStreamEvent);
-      } catch {
-        /* malformed frame — skip; the next one will arrive normally */
-      }
-    };
-    return () => { source.close(); options.onStatus?.('closed'); };
+    return this.openSseChannel<StateStreamEvent>('/api/state/stream', options.onEvent, options.onStatus);
   }
 
   // ---------- SSE ----------
 
-  private openLogStream(options: LogsStreamOptions): () => void {
-    if (!this.currentToken) {
-      options.onStatus?.('closed');
-      return () => {};
-    }
-    const url = `/api/logs/stream?token=${encodeURIComponent(this.currentToken)}`;
-    const source = new EventSource(url);
-    source.onopen = () => options.onStatus?.('open');
-    source.onerror = () => options.onStatus?.('reconnecting');
-    source.onmessage = (event) => {
-      try {
-        const parsed = JSON.parse(event.data) as LogEntry | { type: string };
-        if ('type' in parsed) return; // control frame, not a log line
-        options.onLine(parsed);
-      } catch {
-        /* malformed frame, skip */
-      }
-    };
-    return () => {
-      source.close();
-      options.onStatus?.('closed');
-    };
-  }
-
-  private openDebugStream(
-    onMessage: (m: DebugStreamMessage) => void,
-    onStatus?: (s: import('./types').StreamStatus) => void,
+  /**
+   * Open a token-authed SSE channel to `path`, dispatching each parsed frame to
+   * `onMessage` and surfacing transport state ('open' / 'reconnecting' /
+   * 'closed') via `onStatus`. EventSource auto-reconnects on drop — `onerror`
+   * fires once per loss, so a single 'reconnecting' is enough. A malformed
+   * frame (or a throw from `onMessage`) is swallowed; the next frame arrives
+   * normally. The returned disposer closes the source and reports 'closed'.
+   */
+  private openSseChannel<T>(
+    path: string,
+    onMessage: (data: T) => void,
+    onStatus?: (s: StreamStatus) => void,
   ): () => void {
     if (!this.currentToken) { onStatus?.('closed'); return () => {}; }
-    const url = `/api/debug/stream?token=${encodeURIComponent(this.currentToken)}`;
+    const url = `${path}?token=${encodeURIComponent(this.currentToken)}`;
     const source = new EventSource(url);
     source.onopen = () => onStatus?.('open');
     source.onerror = () => onStatus?.('reconnecting');
     source.onmessage = (event) => {
-      try { onMessage(JSON.parse(event.data) as DebugStreamMessage); } catch { /* skip malformed */ }
+      try { onMessage(JSON.parse(event.data) as T); } catch { /* skip */ }
     };
     return () => { source.close(); onStatus?.('closed'); };
+  }
+
+  private openLogStream(options: LogsStreamOptions): () => void {
+    return this.openSseChannel<LogEntry | { type: string }>('/api/logs/stream', (parsed) => {
+      if ('type' in parsed) return; // control frame, not a log line
+      options.onLine(parsed);
+    }, options.onStatus);
+  }
+
+  private openDebugStream(
+    onMessage: (m: DebugStreamMessage) => void,
+    onStatus?: (s: StreamStatus) => void,
+  ): () => void {
+    return this.openSseChannel<DebugStreamMessage>('/api/debug/stream', onMessage, onStatus);
   }
 }
 
