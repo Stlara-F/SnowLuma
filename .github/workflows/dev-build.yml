@@ -150,6 +150,6 @@ jobs:
         with:
           name: SnowLuma-dev-${{ github.sha }}-${{ matrix.name }}
           path: SnowLuma-dev-${{ matrix.name }}*
-          retention-days: 3
+          retention-days: 30
           overwrite: true
           if-no-files-found: error
