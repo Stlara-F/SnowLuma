@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useApi } from '@/lib/api';
 import { useHookProcessOps } from '@/hooks/use-hook-process-ops';
@@ -119,14 +119,18 @@ export function AppLayout() {
     session.onLogoutComplete();
   }, [api, session]);
 
+  const appStateValue = useMemo(() => ({
+    qqList, processList, systemInfo, connections, updateInfo, selectedUin,
+    setSelectedUin, processOps, refreshProcesses, refreshSystem,
+    refreshConnections, refreshUpdate, onLogout: handleLogout,
+  }), [
+    qqList, processList, systemInfo, connections, updateInfo, selectedUin,
+    setSelectedUin, processOps, refreshProcesses, refreshSystem,
+    refreshConnections, refreshUpdate, handleLogout,
+  ]);
+
   return (
-    <AppStateProvider
-      value={{
-        qqList, processList, systemInfo, connections, updateInfo, selectedUin,
-        setSelectedUin, processOps, refreshProcesses, refreshSystem,
-        refreshConnections, refreshUpdate, onLogout: handleLogout,
-      }}
-    >
+    <AppStateProvider value={appStateValue}>
       <LayoutProvider>
         <KioskProvider>
           <MainLayout status={session.status} onLogout={handleLogout} />

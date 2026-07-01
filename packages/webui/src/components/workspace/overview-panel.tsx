@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { Reorder, motion } from 'motion/react';
 import { Cpu, Eye, EyeOff, GripVertical, MemoryStick, PanelLeftClose, PanelLeftOpen, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -213,7 +213,7 @@ function CompactWidget({ block }: { block: UiLayoutItem }) {
 
 // ─── Stat tiles (ultra-compact single row) ──────────────────────────────────
 
-function CompactStatTile({ id }: { id: string }) {
+const CompactStatTile = memo(function CompactStatTile({ id }: { id: string }) {
   const { qqList, processList, systemInfo } = useAppState();
   const { status } = useSession();
   const online = status === '已连接';
@@ -245,7 +245,7 @@ function CompactStatTile({ id }: { id: string }) {
       <span className="font-semibold tabular-nums">{value}</span>
     </div>
   );
-}
+});
 
 // ─── Host ───────────────────────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ function shortDistro(distro: string): string {
 
 const HOST_DISPLAY_FIELDS = ['cpu', 'memory', 'runtime'] as const;
 
-function CompactHost({ config }: { config: { cpu?: boolean; memory?: boolean; runtime?: boolean } }) {
+const CompactHost = memo(function CompactHost({ config }: { config: { cpu?: boolean; memory?: boolean; runtime?: boolean } }) {
   const { systemInfo } = useAppState();
   const fields = HOST_DISPLAY_FIELDS.filter((f) => config[f] !== false);
   if (!systemInfo || fields.length === 0) {
@@ -359,11 +359,11 @@ function CompactHost({ config }: { config: { cpu?: boolean; memory?: boolean; ru
       )}
     </div>
   );
-}
+});
 
 // ─── Sessions (在线会话) ────────────────────────────────────────────────────
 
-function CompactSessions({ config }: { config: { sort?: string; filter?: string } }) {
+const CompactSessions = memo(function CompactSessions({ config }: { config: { sort?: string; filter?: string } }) {
   const { qqList } = useAppState();
   const items = useMemo(() => {
     const f = (config.filter ?? '').trim().toLowerCase();
@@ -396,7 +396,7 @@ function CompactSessions({ config }: { config: { sort?: string; filter?: string 
       </div>
     </div>
   );
-}
+});
 
 // ─── Connections (OneBot 连接) ──────────────────────────────────────────────
 
@@ -405,7 +405,7 @@ const ADAPTER_KIND_LABEL: Record<string, string> = {
   httpServer: '服务端', httpClient: '上报', wsServer: 'WS', wsClient: 'WS',
 };
 
-function CompactConnections({ config }: { config: { onlyIssues?: boolean; sort?: string; filter?: string } }) {
+const CompactConnections = memo(function CompactConnections({ config }: { config: { onlyIssues?: boolean; sort?: string; filter?: string } }) {
   const { connections } = useAppState();
   const list = useMemo(() => {
     let arr = connections.map((acc) => ({
@@ -448,18 +448,18 @@ function CompactConnections({ config }: { config: { onlyIssues?: boolean; sort?:
       </div>
     </div>
   );
-}
+});
 
 // ─── Note ──────────────────────────────────────────────────────────────────
 
-function CompactNote({ config }: { config: { text?: string } }) {
+const CompactNote = memo(function CompactNote({ config }: { config: { text?: string } }) {
   const text = (config.text ?? '').trim();
   return <div className="rounded border px-2 py-1 text-xs break-words"><span className="font-medium text-muted-foreground">便签</span> <span className="text-muted-foreground/60">{text || '暂无内容'}</span></div>;
-}
+});
 
 // ─── Link ──────────────────────────────────────────────────────────────────
 
-function CompactLink({ config }: { config: { url?: string; label?: string; icon?: string } }) {
+const CompactLink = memo(function CompactLink({ config }: { config: { url?: string; label?: string; icon?: string } }) {
   if (!config.url) {
     return <div className="rounded border px-2 py-1 text-xs"><span className="font-medium text-muted-foreground">链接</span> <span className="text-muted-foreground/60">未配置</span></div>;
   }
@@ -470,11 +470,11 @@ function CompactLink({ config }: { config: { url?: string; label?: string; icon?
       <span className="min-w-0 flex-1 truncate">{config.label || config.url}</span>
     </a>
   );
-}
+});
 
 // ─── Account ──────────────────────────────────────────────────────────────
 
-function CompactAccount({ config }: { config: { uin?: string } }) {
+const CompactAccount = memo(function CompactAccount({ config }: { config: { uin?: string } }) {
   const { qqList } = useAppState();
   const acct = qqList.find((q) => q.uin === config.uin);
   if (!config.uin) {
@@ -490,13 +490,13 @@ function CompactAccount({ config }: { config: { uin?: string } }) {
       {acct && <span className="size-1.5 rounded-full bg-success shrink-0" />}
     </div>
   );
-}
+});
 
 // ─── Deliveries ─────────────────────────────────────────────────────────────
 
-function CompactDeliveries() {
+const CompactDeliveries = memo(function CompactDeliveries() {
   return <div className="rounded border px-2 py-1 text-xs text-muted-foreground">消息投递状态</div>;
-}
+});
 
 // ─── Alerts (pinned to bottom, min 30%) ─────────────────────────────────────
 

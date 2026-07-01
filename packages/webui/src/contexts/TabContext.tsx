@@ -136,42 +136,43 @@ export function TabProvider({ children }: { children: ReactNode }) {
     pageId: TabItem['pageId'],
     opts?: { label?: string; vncPid?: string; vncProcessName?: string; configUin?: string; configLabel?: string },
   ): string => {
-    // Non-VNC pages: check if a matching tab already exists.
-    if (!opts?.vncPid) {
-      if (pageId === 'config' && opts?.configUin) {
-        // Config tabs are differentiated by configUin — reuse only if same UIN.
-        const existing = tabs.find((t) => t.pageId === pageId && t.configUin === opts.configUin);
-        if (existing) {
-          setActiveTabId(existing.id);
-          return existing.id;
-        }
-      } else {
-        const existing = tabs.find((t) => t.pageId === pageId);
-        if (existing) {
-          setActiveTabId(existing.id);
-          return existing.id;
+    const id = makeTabId(pageId);
+    setTabs((prev) => {
+      // Non-VNC pages: check if a matching tab already exists.
+      if (!opts?.vncPid) {
+        if (pageId === 'config' && opts?.configUin) {
+          const existing = prev.find((t) => t.pageId === pageId && t.configUin === opts.configUin);
+          if (existing) {
+            setActiveTabId(existing.id);
+            return prev;
+          }
+        } else {
+          const existing = prev.find((t) => t.pageId === pageId);
+          if (existing) {
+            setActiveTabId(existing.id);
+            return prev;
+          }
         }
       }
-    }
 
-    const id = makeTabId(pageId);
-    const now = Date.now();
-    const newTab: TabItem = {
-      id,
-      pageId,
-      label: opts?.label ?? pageId,
-      iconName: pageId,
-      lastActiveTime: now,
-      vncPid: opts?.vncPid,
-      vncProcessName: opts?.vncProcessName,
-      configUin: opts?.configUin,
-      configLabel: opts?.configLabel,
-    };
+      const now = Date.now();
+      const newTab: TabItem = {
+        id,
+        pageId,
+        label: opts?.label ?? pageId,
+        iconName: pageId,
+        lastActiveTime: now,
+        vncPid: opts?.vncPid,
+        vncProcessName: opts?.vncProcessName,
+        configUin: opts?.configUin,
+        configLabel: opts?.configLabel,
+      };
 
-    setTabs((prev) => [...prev, newTab]);
-    setActiveTabId(id);
+      return [...prev, newTab];
+    });
+
     return id;
-  }, [tabs]);
+  }, []);
 
   const closeTab = useCallback((tabId: string) => {
     setTabs((prev) => {
