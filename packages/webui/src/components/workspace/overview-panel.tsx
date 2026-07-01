@@ -214,7 +214,17 @@ function CompactStatTile({ id }: { id: string }) {
     case 'stat:accounts': label = '账号'; value = `${qqList.length}`; break;
     case 'stat:processes':
       label = '进程'; value = `${processList.filter((p) => p.status === 'online').length} 在线`; break;
-    case 'stat:host': label = '主机'; value = systemInfo?.hostname ?? '—'; break;
+    case 'stat:host':
+      if (systemInfo) {
+        return (
+          <div className="flex items-center gap-1.5 rounded border px-2 py-1 text-xs">
+            <span className="font-medium text-muted-foreground shrink-0">主机</span>
+            <span className="font-semibold">{systemInfo.hostname}</span>
+            <span className="text-muted-foreground/50 font-mono text-[11px]">{systemInfo.archLabel}</span>
+          </div>
+        );
+      }
+      label = '主机'; value = '—'; break;
     case 'stat:uptime': label = '运行'; value = systemInfo ? formatUptime(systemInfo.uptime) : '—'; break;
     default: return null;
   }
@@ -228,6 +238,34 @@ function CompactStatTile({ id }: { id: string }) {
 }
 
 // ─── Host ───────────────────────────────────────────────────────────────────
+
+function shortDistro(distro: string): string {
+  let s = distro;
+  s = s.replace(/^Debian GNU\/Linux /, 'Debian ');
+  s = s.replace(/^Red Hat Enterprise Linux /, 'RHEL ');
+  s = s.replace(/^CentOS (?:Linux )?release /, 'CentOS ');
+  s = s.replace(/^Rocky Linux /, 'Rocky ');
+  s = s.replace(/^Alma(?:Linux)? /, 'Alma ');
+  s = s.replace(/^Oracle Linux /, 'Oracle ');
+  s = s.replace(/^Amazon Linux /, 'Amazon ');
+  s = s.replace(/^Scientific Linux /, 'Scientific ');
+  s = s.replace(/^SUSE Linux Enterprise (?:Server |Desktop )?/, 'SUSE ');
+  s = s.replace(/^Anolis OS /, 'Anolis ');
+  s = s.replace(/^TencentOS Server /, 'TencentOS ');
+  s = s.replace(/^Ubuntu Kylin /, 'Ubuntu ');
+  s = s.replace(/^Manjaro Linux /, 'Manjaro ');
+  s = s.replace(/^Void Linux /, 'Void ');
+  s = s.replace(/^Alibaba Cloud Linux /, 'Alibaba ');
+  s = s.replace(/^Raspbian GNU\/Linux /, 'Raspbian ');
+  s = s.replace(/^DietPi v /, 'DietPi ');
+  s = s.replace(/^Kali GNU\/Linux /, 'Kali ');
+  s = s.replace(/^Proxmox VE /, 'Proxmox ');
+  s = s.replace(/^Windows Server /, 'Win Svr ');
+  s = s.replace(/^Windows (\d+)/, 'Win $1');
+  s = s.replace(/\s*\([^)]+\)/g, '');
+  s = s.replace(/\s{2,}/g, ' ');
+  return s.trim();
+}
 
 const HOST_DISPLAY_FIELDS = ['cpu', 'memory', 'runtime'] as const;
 
@@ -244,20 +282,35 @@ function CompactHost({ config }: { config: { cpu?: boolean; memory?: boolean; ru
 
   return (
     <div className="rounded border px-2 py-1.5 text-xs">
-      {/* Header row: hostname + CPU% + Mem% */}
-      <div className="flex items-center gap-2 mb-1">
-        <span className="font-medium shrink-0">{systemInfo.hostname}</span>
+      {/* Row 1: hostname + distro + arch */}
+      <div className="flex items-center gap-1.5 mb-1 flex-wrap break-words">
+        <span className="font-semibold shrink-0">{systemInfo.hostname}</span>
+        <span className="text-muted-foreground/70 min-w-0 break-words">{shortDistro(systemInfo.distro)}</span>
+        <span className="text-muted-foreground/40 font-mono shrink-0">{systemInfo.archLabel}</span>
+      </div>
+
+      {/* Row 2: CPU model + cores */}
+      <div className="flex items-center gap-1.5 mb-1 text-muted-foreground break-words">
+        <span className="min-w-0 break-words">{systemInfo.cpu.model}</span>
+        <span className="text-muted-foreground/50 shrink-0">{systemInfo.cpu.cores} 核</span>
+      </div>
+
+      {/* Row 3: CPU% + Mem% */}
+      <div className="flex items-center gap-3 mb-1">
         {fields.includes('cpu') && (
-          <span className="inline-flex items-center gap-0.5 text-muted-foreground">
+          <span className="inline-flex items-center gap-0.5 text-muted-foreground text-[11px]">
             <Cpu className="size-2.5" />
             <span className="tabular-nums">{cpuPct.toFixed(1)}%</span>
           </span>
         )}
         {fields.includes('memory') && (
-          <span className="inline-flex items-center gap-0.5 text-muted-foreground">
+          <span className="inline-flex items-center gap-0.5 text-muted-foreground text-[11px]">
             <MemoryStick className="size-2.5" />
             <span className="tabular-nums">{memPct.toFixed(1)}%</span>
           </span>
+        )}
+        {fields.includes('runtime') && (
+          <span className="text-muted-foreground/50 text-[11px]">Node {systemInfo.nodeVersion}</span>
         )}
       </div>
 
@@ -325,7 +378,8 @@ function CompactSessions({ config }: { config: { sort?: string; filter?: string 
               <AvatarImage src={`/avatar/${encodeURIComponent(q.uin)}`} alt={q.nickname || q.uin} />
               <AvatarFallback>{(q.nickname || q.uin).slice(0, 1)}</AvatarFallback>
             </Avatar>
-            <span>{q.nickname || q.uin}</span>
+            <span className="min-w-0 break-words">{q.nickname || q.uin}</span>
+            <span className="font-mono text-muted-foreground/60 text-[10px]">{q.uin}</span>
             <span className="size-1.5 rounded-full bg-success shrink-0" />
           </span>
         ))}
@@ -337,6 +391,9 @@ function CompactSessions({ config }: { config: { sort?: string; filter?: string 
 // ─── Connections (OneBot 连接) ──────────────────────────────────────────────
 
 const CONN_STATUS_RANK: Record<string, number> = { down: 0, warn: 1, disabled: 2, ok: 3 };
+const ADAPTER_KIND_LABEL: Record<string, string> = {
+  httpServer: '服务端', httpClient: '上报', wsServer: 'WS', wsClient: 'WS',
+};
 
 function CompactConnections({ config }: { config: { onlyIssues?: boolean; sort?: string; filter?: string } }) {
   const { connections } = useAppState();
@@ -367,10 +424,13 @@ function CompactConnections({ config }: { config: { onlyIssues?: boolean; sort?:
       <div className="mt-0.5 flex flex-col gap-0.5">
         {list.map((acc) => (
           <div key={acc.uin} className="flex items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate font-medium">{acc.nickname || acc.uin}</span>
-            <div className="flex items-center gap-1">
+            <span className="min-w-0 break-words font-medium">{acc.nickname || acc.uin}</span>
+            <div className="flex items-center gap-1.5">
               {acc.adapters.slice(0, 4).map((a) => (
-                <span key={a.name} className={cn('size-1.5 rounded-full', a.status === 'ok' ? 'bg-success' : a.status === 'warn' ? 'bg-warning' : a.status === 'down' ? 'bg-destructive' : 'bg-muted-foreground')} title={`${a.name}: ${a.status}`} />
+                <span key={a.name} className={cn('inline-flex items-center gap-0.5', a.status === 'ok' ? 'text-success' : a.status === 'warn' ? 'text-warning' : a.status === 'down' ? 'text-destructive' : 'text-muted-foreground')} title={`${a.name}: ${a.status}`}>
+                  <span className={cn('size-1.5 rounded-full', a.status === 'ok' ? 'bg-success' : a.status === 'warn' ? 'bg-warning' : a.status === 'down' ? 'bg-destructive' : 'bg-muted-foreground')} />
+                  <span className="text-[10px]">{ADAPTER_KIND_LABEL[a.kind] ?? a.kind}</span>
+                </span>
               ))}
             </div>
           </div>
@@ -384,7 +444,7 @@ function CompactConnections({ config }: { config: { onlyIssues?: boolean; sort?:
 
 function CompactNote({ config }: { config: { text?: string } }) {
   const text = (config.text ?? '').trim();
-  return <div className="rounded border px-2 py-1 text-xs"><span className="font-medium text-muted-foreground">便签</span> <span className="text-muted-foreground/60">{text || '暂无内容'}</span></div>;
+  return <div className="rounded border px-2 py-1 text-xs break-words"><span className="font-medium text-muted-foreground">便签</span> <span className="text-muted-foreground/60">{text || '暂无内容'}</span></div>;
 }
 
 // ─── Link ──────────────────────────────────────────────────────────────────
