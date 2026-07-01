@@ -123,7 +123,9 @@ export function TabContent({ tab, isActive }: TabContentProps) {
     <div ref={containerRef} className="h-full w-full overflow-auto">
       {Component ? (
         <Suspense fallback={<TabFallback />}>
-          {tab.pageId === 'config' ? (
+          {tab.pageId === 'vnc' ? (
+            <Component vncPid={tab.vncPid} vncProcessName={tab.vncProcessName} />
+          ) : tab.pageId === 'config' ? (
             <Component {...{ configUin: tab.configUin, configLabel: tab.configLabel }} />
           ) : (
             <Component />

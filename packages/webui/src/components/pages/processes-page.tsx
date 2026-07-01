@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { AlertCircle, CheckCircle2, Cpu, Eye, Loader2, Monitor, RefreshCw, Unplug } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Cpu, Eye, Loader2, RefreshCw, Unplug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -184,19 +184,6 @@ export function ProcessesPage() {
                       </div>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                      {__VNC_ENABLED__ && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => {
-                            const name = proc.name || `PID ${proc.pid}`;
-                            window.location.href = `/processes/vnc/${proc.pid}?processName=${encodeURIComponent(name)}`;
-                          }}
-                        >
-                          <Monitor className="size-3.5" /> 远程桌面
-                        </Button>
-                      )}
                       <Button
                         size="sm"
                         variant="outline"

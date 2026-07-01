@@ -65,6 +65,10 @@ const PAGE_REGISTRY: Record<TabItem['pageId'], () => Promise<{ default: React.Co
     const mod = await import('@/components/pages/settings-page');
     return { default: mod.SettingsPage };
   },
+  vnc: async () => {
+    const mod = await import('@/components/pages/vnc-view-page');
+    return { default: mod.VncViewPage };
+  },
 };
 
 export interface TabContextValue {

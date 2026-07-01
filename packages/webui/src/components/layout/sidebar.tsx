@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { Bug, LayoutDashboard, PlugZap, Settings, Terminal, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Bug, LayoutDashboard, Monitor, PlugZap, Settings, Terminal, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { APP_NAME, APP_VERSION } from '@/types';
@@ -27,12 +27,14 @@ export const NAV_ITEMS: NavItem[] = [
 
 export const PINNED_NAV: AppPath[] = ['/', '/settings'];
 
-/** Horizontal menu items for the title bar (overview excluded — persistent in right 1/4). */
+/** Horizontal menu items for the title bar. */
 const TITLEBAR_MENUS = [
+  { id: 'overview', label: '总览', icon: LayoutDashboard },
   { id: 'processes', label: '进程注入', icon: PlugZap },
   { id: 'config', label: '节点配置', icon: Settings },
   { id: 'logs', label: '日志', icon: Terminal },
   { id: 'debug', label: '调试', icon: Bug },
+  { id: 'vnc', label: '远程桌面', icon: Monitor },
   { id: 'settings', label: '系统设置', icon: SlidersHorizontal },
 ] as const;
 
@@ -124,6 +126,7 @@ export function Sidebar({ mode = 'titlebar', onItemClick }: SidebarProps) {
               >
                 <button
                   type="button"
+                  onClick={() => { openTab(menu.id); setActiveMenuId(null); }}
                   className={cn(
                     'flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium transition-colors cursor-pointer',
                     isActive

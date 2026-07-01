@@ -151,7 +151,7 @@ export type NetworkKind = keyof OneBotNetworks;
 export interface TabItem {
   id: string;
   /** Which page this tab renders. */
-  pageId: 'overview' | 'processes' | 'config' | 'logs' | 'debug' | 'settings';
+  pageId: 'overview' | 'processes' | 'config' | 'logs' | 'debug' | 'settings' | 'vnc';
   label: string;
   /** Lucide icon name — resolved at render time. */
   iconName: string;

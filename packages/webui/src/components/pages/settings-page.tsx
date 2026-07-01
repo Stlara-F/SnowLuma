@@ -54,7 +54,7 @@ const TABS: { key: string; label: string; icon: typeof Sun }[] = [
 ];
 
 export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState('appearance');
+  const [activeTab, setActiveTab] = useState('about');
 
   return (
     <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-6">

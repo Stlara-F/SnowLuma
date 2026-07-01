@@ -121,6 +121,12 @@ export function SidebarDropdown({ menuId, open, onClose, onMouseEnter, onMouseLe
           {menuId === 'settings' && (
             <SinglePageSubmenu label="系统设置" pageId="settings" onOpen={(pageId) => { void openTab(pageId); onClose(); }} />
           )}
+          {menuId === 'overview' && (
+            <SinglePageSubmenu label="总览" pageId="overview" onOpen={(pageId) => { void openTab(pageId); onClose(); }} />
+          )}
+          {menuId === 'vnc' && (
+            <SinglePageSubmenu label="远程桌面" pageId="vnc" onOpen={(pageId) => { void openTab(pageId); onClose(); }} />
+          )}
         </motion.div>
       )}
     </AnimatePresence>
@@ -279,8 +285,8 @@ function LogSubmenu({ currentLevel, onLevelClick }: {
 
 interface SinglePageSubmenuProps {
   label: string;
-  pageId: 'debug' | 'settings';
-  onOpen: (pageId: "overview" | "processes" | "config" | "logs" | "debug" | "settings") => void;
+  pageId: 'overview' | 'debug' | 'settings' | 'vnc';
+  onOpen: (pageId: "overview" | "processes" | "config" | "logs" | "debug" | "settings" | "vnc") => void;
 }
 
 function SinglePageSubmenu({ label, pageId, onOpen }: SinglePageSubmenuProps) {
@@ -296,7 +302,7 @@ function SinglePageSubmenu({ label, pageId, onOpen }: SinglePageSubmenuProps) {
         onClick={handleOpen}
         className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer hover:bg-muted/50 hover:text-foreground"
       >
-        {pageId === 'debug' ? '调试工具' : '系统设置'}
+        {label}
       </button>
     </div>
   );

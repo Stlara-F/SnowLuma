@@ -87,11 +87,21 @@ function CompactOverview() {
   const setBlockConfig = (id: string, config: Record<string, unknown>) =>
     setOverviewBlocks(overviewBlocks.map((b) => (b.id === id ? { ...b, config: { ...b.config, ...config } } : b)));
 
+  // Priority order for non-alerts widgets (reading order: status → host → processes → sessions → connections → static).
+  const WIDGET_PRIORITY: Record<string, number> = {
+    'stat:status': 0, 'stat:host': 1, 'stat:uptime': 2,
+    'stat:accounts': 3, 'stat:processes': 4,
+    'host': 5, 'sessions': 6, 'connections': 7,
+    'deliveries': 8, 'note': 9, 'link': 10, 'account': 11,
+  };
+
   const orderedItems = useMemo(() => {
     const alerts = mobileItems.find((i) => i.id === 'alerts');
-    const rest = mobileItems.filter((i) => i.id !== 'alerts');
+    const rest = [...mobileItems.filter((i) => i.id !== 'alerts')].sort(
+      (a, b) => (WIDGET_PRIORITY[a.id] ?? 99) - (WIDGET_PRIORITY[b.id] ?? 99),
+    );
     return alerts ? [...rest, alerts] : rest;
-  }, [mobileItems]);
+  }, [mobileItems]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleWidgets = orderedItems.filter((i) => i.id !== 'alerts' && i.visible);
   const alertsVisible = orderedItems.find((i) => i.id === 'alerts' && i.visible);

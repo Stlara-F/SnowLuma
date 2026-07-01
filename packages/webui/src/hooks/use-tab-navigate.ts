@@ -20,6 +20,7 @@ const PAGE_TO_ROUTE: Record<TabItem['pageId'], string> = {
   logs: '/logs',
   debug: '/debug',
   settings: '/settings',
+  vnc: '/',
 };
 
 export interface TabNavigateResult {

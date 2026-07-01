@@ -1,4 +1,3 @@
-import { lazy, Suspense } from 'react';
 import {
   createRootRoute,
   createRouter,
@@ -6,26 +5,12 @@ import {
 import { AppLayout } from './app-layout';
 import { ErrorPage, NotFoundPage } from '@/components/pages/status-screens';
 
-const VncViewPage = lazy(() =>
-  import('@/components/pages/vnc-view-page').then((m) => ({ default: m.VncViewPage })),
-);
-
 // ─── Route tree ──────────────────────────────────────────────────────────────
-// Main app renders through AppLayout (no child routes — tabs manage pages).
-// VNC view is handled by path detection: /processes/vnc/* loads VncViewPage
-// directly without the MainLayout shell.
+// Tab-based architecture: WorkspaceView handles page rendering internally.
+// A single rootRoute renders AppLayout for all URLs.
 
 const rootRoute = createRootRoute({
-  component: () => {
-    if (window.location.pathname.startsWith('/processes/vnc/')) {
-      return (
-        <Suspense fallback={<div className="flex h-screen items-center justify-center text-sm text-muted-foreground">加载中...</div>}>
-          <VncViewPage />
-        </Suspense>
-      );
-    }
-    return <AppLayout />;
-  },
+  component: () => <AppLayout />,
 });
 
 const routeTree = rootRoute.addChildren([]);
