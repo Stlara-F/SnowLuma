@@ -1,4 +1,5 @@
 import { createLogger } from '@snowluma/common/logger';
+import { isRealUin } from '@snowluma/common/uin';
 import { randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -9,7 +10,6 @@ import type {
   MessageFormat,
   OneBotConfig,
   OneBotNetworks,
-  RKeyConfig,
   StatusCommandConfig,
   WsClientNetwork,
   WsRole,
@@ -62,10 +62,8 @@ export function makeDefaultOneBotConfig(): OneBotConfig {
       }],
       wsClients: [],
     },
-    musicSignUrl: '',
     statusCommand: makeDefaultStatusCommand(),
     notifications: { channelIds: [] },
-    rkey: { fallbackServers: [] },
   };
 }
 
@@ -108,6 +106,38 @@ function ensureConfigDir(): void {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
 }
 
+const PER_UIN_CONFIG = /^onebot_(\d+)\.json$/;
+
+/**
+ * Remove per-UIN config files whose UIN is not a real QQ account — leftovers
+ * from the phantom-account bug where the native hook reported a garbage
+ * (timestamp-shaped) UIN and a `onebot_<garbage>.json` got persisted (issue
+ * #162). Only files matching `onebot_<digits>.json` are considered, and only
+ * those failing isRealUin (i.e. 11+ digits) are deleted — legitimate accounts
+ * are never touched. Returns the deleted file names. Safe to call at startup.
+ */
+export function cleanupInvalidPerUinConfigs(): string[] {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(CONFIG_DIR);
+  } catch {
+    return []; // config dir not created yet — nothing to clean
+  }
+  const removed: string[] = [];
+  for (const name of entries) {
+    const match = PER_UIN_CONFIG.exec(name);
+    if (!match || isRealUin(match[1])) continue;
+    try {
+      fs.unlinkSync(path.join(CONFIG_DIR, name));
+      removed.push(name);
+      log.warn('removed phantom per-UIN config (invalid UIN): %s', name);
+    } catch (err) {
+      log.warn('failed to remove phantom config %s: %s', name, err instanceof Error ? err.message : String(err));
+    }
+  }
+  return removed;
+}
+
 function toJsonObject(config: OneBotConfig): JsonObject {
   const nets = config.networks;
   return {
@@ -117,7 +147,6 @@ function toJsonObject(config: OneBotConfig): JsonObject {
       wsServers: nets.wsServers.map(wsServerToJson),
       wsClients: nets.wsClients.map(wsClientToJson),
     },
-    musicSignUrl: config.musicSignUrl ?? '',
     statusCommand: {
       enabled: config.statusCommand.enabled,
       swallow: config.statusCommand.swallow,
@@ -125,7 +154,6 @@ function toJsonObject(config: OneBotConfig): JsonObject {
       trigger: config.statusCommand.trigger,
     },
     notifications: { channelIds: config.notifications?.channelIds ?? [] },
-    rkey: { fallbackServers: config.rkey?.fallbackServers ?? [] },
   };
 }
 
@@ -182,12 +210,10 @@ function wsClientToJson(n: WsClientNetwork): JsonObject {
 function fromJson(sources: JsonObject[], freshInstall: boolean): OneBotConfig {
   let legacyFormat: MessageFormat | undefined;
   let legacyReport: boolean | undefined;
-  let musicSignUrl = '';
   for (const src of sources) {
     const mf = parseMessageFormat(src.messageFormat);
     if (mf) legacyFormat = mf;
     if (typeof src.reportSelfMessage === 'boolean') legacyReport = src.reportSelfMessage;
-    if (typeof src.musicSignUrl === 'string') musicSignUrl = src.musicSignUrl;
   }
   const inheritedFormat: MessageFormat = legacyFormat ?? 'array';
   const inheritedReport: boolean = legacyReport ?? false;
@@ -211,40 +237,9 @@ function fromJson(sources: JsonObject[], freshInstall: boolean): OneBotConfig {
   const networks: OneBotNetworks = { httpServers, httpClients, wsServers, wsClients };
   return {
     networks,
-    musicSignUrl,
     statusCommand: parseStatusCommand(sources),
     notifications: parseNotifications(sources),
-    rkey: parseRKeyConfig(sources),
   };
-}
-
-/** Last-write-wins merge of `rkey.fallbackServers` across config sources. Only
- *  http(s) URLs are kept; the list is deduped. Default empty (feature off). */
-function parseRKeyConfig(sources: JsonObject[]): RKeyConfig {
-  let fallbackServers: string[] = [];
-  for (const src of sources) {
-    const raw = src.rkey;
-    if (!isObject(raw)) continue;
-    if (Array.isArray(raw.fallbackServers)) {
-      fallbackServers = normalizeRkeyServers(raw.fallbackServers);
-    }
-  }
-  return { fallbackServers };
-}
-
-function normalizeRkeyServers(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const v = item.trim();
-    if (!v || !/^https?:\/\//i.test(v)) continue;
-    if (seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-  }
-  return out;
 }
 
 /** Last-write-wins merge of `notifications.channelIds` across config sources,

@@ -2,6 +2,8 @@ import { HookManager } from '@snowluma/bridge';
 import { closeLogger, createLogger } from '@snowluma/common/logger';
 import { loadRuntimeConfig } from '@snowluma/common/runtime';
 import { OneBotManager } from '@snowluma/onebot/manager';
+import { migrateGlobalSettings } from '@snowluma/onebot/global-config';
+import { cleanupInvalidPerUinConfigs } from '@snowluma/onebot/config';
 import { BridgeManager } from './bridge/manager';
 import { createNotificationManager } from './notifications/manager';
 import { createStateWiring } from './webui/state-wiring';
@@ -27,6 +29,14 @@ process.on('uncaughtException', (error) => {
 
 async function main() {
   log.info('SnowLuma starting');
+
+  // One-shot: lift a legacy per-UIN musicSignUrl into the global store before
+  // any session (and thus any per-UIN config rewrite) can drop it.
+  migrateGlobalSettings();
+
+  // One-shot: purge any persisted phantom accounts (onebot_<garbage>.json) the
+  // native hook may have created with a timestamp-shaped UIN (issue #162).
+  cleanupInvalidPerUinConfigs();
 
   const bridgeManager = new BridgeManager();
   const oneBotManager = new OneBotManager();

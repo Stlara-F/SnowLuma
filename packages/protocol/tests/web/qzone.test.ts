@@ -93,6 +93,31 @@ describe('qzone / getQzoneMsgList (HTTP layer)', () => {
     expect(q.get('format')).toBe('jsonp');
   });
 
+  it('retries via the user.qzone.qq.com route on a -10000 rate-limit', async () => {
+    const spy = vi
+      .spyOn(RequestUtil, 'HttpGetText')
+      .mockResolvedValueOnce('{"code":-10000,"message":"使用人数过多，请稍后再试"}')
+      .mockResolvedValueOnce(
+        '{"code":0,"total":1,"msglist":[{"tid":"T1","content":"hi","created_time":1700000000,"cmtnum":0,"secret":0,"pic":[]}]}',
+      );
+
+    const out = await getQzoneMsgList(cookies, '10000', 0, 20);
+
+    expect(out).toEqual({
+      total: 1,
+      msglist: [{ tid: 'T1', content: 'hi', time: 1700000000, comment_num: 0, is_private: false, images: [] }],
+    });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy.mock.calls[0]![0]).toContain('https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/');
+    const [retryUrl, , , retryHeaders] = spy.mock.calls[1]!;
+    expect(retryUrl).toContain('https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6?');
+    expect((retryHeaders as Record<string, string>).Referer).toBe('https://user.qzone.qq.com/10000');
+    const q = new URLSearchParams((retryUrl as string).split('?')[1]);
+    expect(q.get('format')).toBe('json');
+    expect(q.get('g_tk')).toBe(expectedGtk);
+  });
+
   it('returns an empty list (not a throw) for a genuinely empty space', async () => {
     // The throw-on-auth-failure contract hinges on distinguishing a missing
     // msglist (cookie failure → throw) from an empty msglist (no 说说 → []).
@@ -175,17 +200,17 @@ describe('qzone / getQzoneFeeds (HTTP layer)', () => {
   });
 
   it('returns an empty list (not a throw) for a genuinely empty feed', async () => {
-    vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('{"code":0,"data":{"data":[],"hasmore":0}}');
+    vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('_preloadCallback({"code":0,"data":{"data":[],"hasmore":0}});');
     await expect(getQzoneFeeds(cookies, '10000')).resolves.toEqual({ feeds: [], has_more: false });
   });
 
   it('throws on a non-zero qzone code', async () => {
-    vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('{"code":-3000,"message":"need login"}');
+    vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('_preloadCallback({"code":-3000,"message":"need login"});');
     await expect(getQzoneFeeds(cookies, '10000')).rejects.toThrow('code=-3000');
   });
 
   it('throws when the data array is absent (cookie failure), not an empty list', async () => {
-    vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('{"code":0,"data":{}}');
+    vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('_preloadCallback({"code":0,"data":{}});');
     await expect(getQzoneFeeds(cookies, '10000')).rejects.toThrow('无法获取空间好友动态');
   });
 });
@@ -218,8 +243,56 @@ describe('qzone / publishQzoneMsg (HTTP layer)', () => {
     expect(form.get('con')).toBe('hello 世界 & friends');
     expect(form.get('hostuin')).toBe('10000');
     expect(form.get('who')).toBe('1');
+    expect(form.get('ugc_right')).toBe('1');
+    expect(form.has('allow_uins')).toBe(false);
     expect(form.get('format')).toBe('json');
     expect(form.get('qzreferrer')).toBe('https://user.qzone.qq.com/10000');
+  });
+
+  it('threads image richType/richval into the publish form', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue(
+      '{"code":0,"t1_tid":"NEWTID","t1_time":"1700000000"}',
+    );
+    const richval = ',12345,abc,abc,22,800,600,,800,600\t,12346,def,def,22,640,480,,640,480';
+
+    await publishQzoneMsg(cookies, '10000', 'with images', 1, richval);
+
+    const form = new URLSearchParams(spy.mock.calls[0]![2] as string);
+    expect(form.get('richtype')).toBe('1');
+    expect(form.get('richval')).toBe(richval);
+  });
+
+  it('threads publish permission fields for restricted visibility', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue(
+      '{"code":0,"t1_tid":"RIGHTTID","t1_time":"1700000000"}',
+    );
+
+    await expect(publishQzoneMsg(cookies, '10000', 'limited', undefined, undefined, 16, '10001 | 10002|10001')).resolves.toEqual({
+      tid: 'RIGHTTID',
+      time: 1700000000,
+    });
+
+    const [, , body] = spy.mock.calls[0]!;
+    const form = new URLSearchParams(body as string);
+    expect(form.get('ugc_right')).toBe('16');
+    expect(form.get('allow_uins')).toBe('10001|10002');
+    expect(form.get('who')).toBe('1');
+  });
+
+  it('ignores target_uins for non-restricted visibility', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue(
+      '{"code":0,"t1_tid":"FRIENDTID","t1_time":"1700000000"}',
+    );
+
+    await expect(publishQzoneMsg(cookies, '10000', 'friends', undefined, undefined, 4, 'not-a-uin')).resolves.toEqual({
+      tid: 'FRIENDTID',
+      time: 1700000000,
+    });
+
+    const [, , body] = spy.mock.calls[0]!;
+    const form = new URLSearchParams(body as string);
+    expect(form.get('ugc_right')).toBe('4');
+    expect(form.has('allow_uins')).toBe(false);
   });
 
   it('falls back to tid/now for alternate client builds', async () => {
@@ -230,6 +303,19 @@ describe('qzone / publishQzoneMsg (HTTP layer)', () => {
   it('rejects empty content before any request', async () => {
     const spy = vi.spyOn(RequestUtil, 'HttpGetText');
     await expect(publishQzoneMsg(cookies, '10000', '')).rejects.toThrow('content is required');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects incomplete publish rich params before any request', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText');
+    await expect(publishQzoneMsg(cookies, '10000', 'hi', 1)).rejects.toThrow('richType and richval');
+    await expect(publishQzoneMsg(cookies, '10000', 'hi', undefined, ',123')).rejects.toThrow('richType and richval');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects restricted visibility without target_uins before any request', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText');
+    await expect(publishQzoneMsg(cookies, '10000', 'hi', undefined, undefined, 128)).rejects.toThrow('target_uins is required');
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -378,13 +464,24 @@ describe('qzone / commentQzoneMsg (HTTP layer)', () => {
     expect(form.get('uin')).toBe('10000');
     expect(form.get('hostUin')).toBe('20002');
     expect(form.get('content')).toBe('说得好 & 顶');
-    expect(form.get('format')).toBe('fs');
+    expect(form.get('format')).toBe('json');
     // qzreferrer carries the commenter's own space (matches the impls)
     expect(form.get('qzreferrer')).toBe('https://user.qzone.qq.com/10000');
     // the re_feeds param family (3/3 impls) the publish sibling also sends
     expect(form.get('feedsType')).toBe('100');
     expect(form.get('private')).toBe('0');
     expect(form.get('paramstr')).toBe('1');
+  });
+
+  it('threads image direct-url richval into the comment form', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText').mockResolvedValue('{"code":0,"commentid":987}');
+    const richval = 'https://example.qzone.qq.com/a.jpg\thttps://example.qzone.qq.com/b.jpg';
+
+    await commentQzoneMsg(cookies, '10000', '20002', 'TIDX', 'pics', 1, richval);
+
+    const form = new URLSearchParams(spy.mock.calls[0]![2] as string);
+    expect(form.get('richtype')).toBe('1');
+    expect(form.get('richval')).toBe(richval);
   });
 
   it('resolves with empty comment_id on success when the response carries no id (field name varies)', async () => {
@@ -401,6 +498,13 @@ describe('qzone / commentQzoneMsg (HTTP layer)', () => {
     const spy = vi.spyOn(RequestUtil, 'HttpGetText');
     await expect(commentQzoneMsg(cookies, '10000', '20002', '', 'hi')).rejects.toThrow('tid is required');
     await expect(commentQzoneMsg(cookies, '10000', '20002', 'TIDX', '')).rejects.toThrow('content is required');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects incomplete comment rich params before any request', async () => {
+    const spy = vi.spyOn(RequestUtil, 'HttpGetText');
+    await expect(commentQzoneMsg(cookies, '10000', '20002', 'TIDX', 'hi', 1)).rejects.toThrow('richType and richval');
+    await expect(commentQzoneMsg(cookies, '10000', '20002', 'TIDX', 'hi', undefined, 'https://example.com/img.jpg')).rejects.toThrow('richType and richval');
     expect(spy).not.toHaveBeenCalled();
   });
 

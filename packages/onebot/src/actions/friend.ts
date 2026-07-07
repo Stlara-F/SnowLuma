@@ -1,5 +1,4 @@
-import { defineAction, registerActions, f } from '../action-kit';
-import type { ApiActionContext, ApiHandler } from '../api-handler';
+import { defineAction, f } from '../action-kit';
 import { okResponse } from '../types';
 
 export const actions = [
@@ -46,7 +45,7 @@ export const actions = [
       },
       required: ['user_id', 'nickname', 'sex', 'age'],
     },
-    params: { user_id: f.uint().describe('QQ 号') },
+    params: { user_id: f.userId().describe('QQ 号') },
     run: async (p, ctx) => {
       const userId = p.user_id;
       if (ctx.getStrangerInfo) {
@@ -60,7 +59,7 @@ export const actions = [
   defineAction({
     name: 'delete_friend',
     summary: '删除好友',
-    params: { user_id: f.uint().describe('QQ 号'), block: f.bool().default(false) },
+    params: { user_id: f.userId().describe('QQ 号'), block: f.bool().default(false) },
     run: async (p, ctx) => {
       await ctx.bridge.apis.friend.delete(p.user_id, p.block);
       return okResponse();
@@ -68,6 +67,3 @@ export const actions = [
   }),
 ];
 
-export function register(h: ApiHandler, ctx: ApiActionContext): void {
-  registerActions(h, ctx, actions);
-}

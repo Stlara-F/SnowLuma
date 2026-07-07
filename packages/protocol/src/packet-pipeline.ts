@@ -104,9 +104,7 @@ export class IncomingPacketPipeline {
                 err instanceof Error ? (err.stack ?? err.message) : String(err));
             });
           } else {
-            this.handleSideEffects(event);
-            printEvent(this.eventLog, this.deps.identity, event);
-            this.emit(event);
+            this.finishDispatch(event);
           }
         }
       } catch (e) {
@@ -119,6 +117,19 @@ export class IncomingPacketPipeline {
     // Fire-and-forget: errors inside subscribers are surfaced via the bus's
     // own onError hook so one bad listener never blocks the others.
     void this.deps.events.emit(event);
+  }
+
+  /**
+   * Common dispatch tail shared by the sync path and the two async enrichment
+   * paths: run side effects, log the event, then emit it. `alreadyRefreshed` is
+   * threaded through to `handleSideEffects` (true only on the identity-refresh
+   * path, where the roster refresh was already done) — it defaults false, so
+   * `finishDispatch(event)` matches the old `handleSideEffects(event)` calls.
+   */
+  private finishDispatch(event: QQEventVariant, alreadyRefreshed = false): void {
+    this.handleSideEffects(event, alreadyRefreshed);
+    printEvent(this.eventLog, this.deps.identity, event);
+    this.emit(event);
   }
 
   private needsPreDispatchIdentityRefresh(event: QQEventVariant): event is Extract<QQEventVariant, { kind: 'group_member_join' }> {
@@ -155,9 +166,7 @@ export class IncomingPacketPipeline {
         event.groupId, event.userUid ?? '', e instanceof Error ? e.message : String(e));
     }
 
-    this.handleSideEffects(event, refreshed);
-    printEvent(this.eventLog, this.deps.identity, event);
-    this.emit(event);
+    this.finishDispatch(event, refreshed);
   }
 
   private async dispatchGroupInvite(event: Extract<QQEventVariant, { kind: 'group_invite' }>): Promise<void> {
@@ -218,9 +227,7 @@ export class IncomingPacketPipeline {
       }
     }
 
-    this.handleSideEffects(event);
-    printEvent(this.eventLog, this.deps.identity, event);
-    this.emit(event);
+    this.finishDispatch(event);
   }
 
   private async prepareGroupMemberJoinIdentity(event: Extract<QQEventVariant, { kind: 'group_member_join' }>): Promise<boolean> {
@@ -301,6 +308,19 @@ export class IncomingPacketPipeline {
 
   private rememberEventIdentity(event: QQEventVariant): void {
     switch (event.kind) {
+      case 'group_message': {
+        // [#1] Self-heal a member's cached group card from message traffic. The
+        // member cache only refreshes via a member-list refetch, which nothing
+        // triggers on a card change and a quiet, months-long bot may never fire.
+        // The decoder resolved the current card from field 4 into senderCard;
+        // when it differs from the cache, update it — gated so we write only on
+        // an actual change, not on every message.
+        const cached = this.deps.identity.findGroupMember(event.groupId, event.senderUin);
+        if (cached && event.senderCard && event.senderCard !== cached.card) {
+          this.deps.identity.updateGroupMember(event.groupId, { ...cached, card: event.senderCard });
+        }
+        break;
+      }
       case 'group_member_join':
         this.deps.identity.rememberGroupMemberIdentity(event.groupId, {
           uid: event.userUid,

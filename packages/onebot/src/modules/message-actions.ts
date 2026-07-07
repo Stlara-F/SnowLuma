@@ -417,6 +417,43 @@ export async function setEssenceMessage(
  * inspect it through `/get_msg` can distinguish their own outbound
  * messages from incoming ones.
  */
+/**
+ * The shared "record a self-sent message" tail: derive the OneBot message id
+ * from (sequence, target, event), then cache both the meta and the self-sent
+ * copy. Centralizes the `isGroup ↔ eventName ↔ hashMessageIdInt32 event
+ * constant` coupling that was hand-paired in six send/forward paths — a
+ * mismatch there silently produced a wrong message_id or wrong event
+ * attribution. Returns the derived message id.
+ */
+async function finalizeSend(
+  ref: OneBotInstanceContext,
+  isGroup: boolean,
+  targetId: number,
+  receipt: { sequence: number; clientSequence: number; random: number; timestamp: number },
+  elements: MessageElement[],
+): Promise<number> {
+  const eventName = isGroup ? GROUP_MESSAGE_EVENT : PRIVATE_MESSAGE_EVENT;
+  const messageId = hashMessageIdInt32(receipt.sequence, targetId, eventName);
+  ref.cacheMessageMeta(messageId, {
+    isGroup,
+    targetId,
+    sequence: receipt.sequence,
+    eventName,
+    clientSequence: receipt.clientSequence,
+    random: receipt.random,
+    timestamp: receipt.timestamp,
+  });
+  await cacheSelfSentMessage(ref, {
+    isGroup,
+    sessionId: targetId,
+    messageId,
+    sequence: receipt.sequence,
+    timestamp: receipt.timestamp,
+    elements,
+  });
+  return messageId;
+}
+
 async function cacheSelfSentMessage(
   ref: OneBotInstanceContext,
   options: {
@@ -465,7 +502,12 @@ async function cacheSelfSentMessage(
       font: 0,
       sender: {
         user_id: selfId,
-        nickname: '',
+        // This is the bot itself — seed our own nickname so a self-sent message
+        // that the server never echoes back (notably group file / video sends,
+        // which publish via OIDB rather than PbSendMsg) doesn't surface an empty
+        // sender.nickname in get_msg / get_group_msg_history. For a normal text
+        // send the echo still overwrites this with the same value.
+        nickname: ref.bridge.identity.nickname || '',
         sex: 'unknown',
         age: 0,
       },
@@ -583,6 +625,20 @@ export async function sendPrivateMessage(
   let allFileElements = elements.filter(e => e.type === 'file');
   let nonFileElements = elements.filter(e => e.type !== 'file');
 
+  // [#145] Videos up to MAX_VIDEO_SIZE (1.5 GiB) send as real videos; only
+  // above that do we route to the file pipeline (the whole video is buffered
+  // in RAM for the Highway upload, so this bounds memory). The earlier
+  // 100 MB cap was a workaround for the width/height=0 → 已过期 bug (now
+  // fixed) and has been lifted. Route known-oversized videos up front —
+  // the on-error fallback below can't catch them (the upload doesn't throw).
+  {
+    const pre = splitVideoFileFallback(nonFileElements, false);
+    if (pre.fileEls.length > 0) {
+      allFileElements = [...allFileElements, ...pre.fileEls];
+      nonFileElements = pre.remaining;
+    }
+  }
+
   let lastReceipt: Awaited<ReturnType<typeof ref.bridge.apis.message.sendPrivate>> | undefined;
   if (nonFileElements.length > 0) {
     try {
@@ -631,24 +687,7 @@ export async function sendPrivateMessage(
   }
   if (!lastReceipt) throw new Error('message is empty');
 
-  const messageId = hashMessageIdInt32(lastReceipt.sequence, userId, PRIVATE_MESSAGE_EVENT);
-  ref.cacheMessageMeta(messageId, {
-    isGroup: false,
-    targetId: userId,
-    sequence: lastReceipt.sequence,
-    eventName: PRIVATE_MESSAGE_EVENT,
-    clientSequence: lastReceipt.clientSequence,
-    random: lastReceipt.random,
-    timestamp: lastReceipt.timestamp,
-  });
-  await cacheSelfSentMessage(ref, {
-    isGroup: false,
-    sessionId: userId,
-    messageId,
-    sequence: lastReceipt.sequence,
-    timestamp: lastReceipt.timestamp,
-    elements,
-  });
+  const messageId = await finalizeSend(ref, false, userId, lastReceipt, elements);
 
   return { messageId };
 }
@@ -689,6 +728,16 @@ export async function sendGroupMessage(
   //  b) has file_id from a prior upload_group_file → publish() only
   let allFileElements = elements.filter(e => e.type === 'file');
   let nonFileElements = elements.filter(e => e.type !== 'file');
+
+  // [#145] Route videos above MAX_VIDEO_SIZE (1.5 GiB) to the file path up
+  // front; everything at or below sends as a real video (see sendPrivate).
+  {
+    const pre = splitVideoFileFallback(nonFileElements, false);
+    if (pre.fileEls.length > 0) {
+      allFileElements = [...allFileElements, ...pre.fileEls];
+      nonFileElements = pre.remaining;
+    }
+  }
 
   let lastReceipt: Awaited<ReturnType<typeof ref.bridge.apis.message.sendGroup>> | undefined;
   if (nonFileElements.length > 0) {
@@ -735,24 +784,7 @@ export async function sendGroupMessage(
   }
   if (!lastReceipt) throw new Error('message is empty');
 
-  const messageId = hashMessageIdInt32(lastReceipt.sequence, groupId, GROUP_MESSAGE_EVENT);
-  ref.cacheMessageMeta(messageId, {
-    isGroup: true,
-    targetId: groupId,
-    sequence: lastReceipt.sequence,
-    eventName: GROUP_MESSAGE_EVENT,
-    clientSequence: lastReceipt.clientSequence,
-    random: lastReceipt.random,
-    timestamp: lastReceipt.timestamp,
-  });
-  await cacheSelfSentMessage(ref, {
-    isGroup: true,
-    sessionId: groupId,
-    messageId,
-    sequence: lastReceipt.sequence,
-    timestamp: lastReceipt.timestamp,
-    elements,
-  });
+  const messageId = await finalizeSend(ref, true, groupId, lastReceipt, elements);
 
   return { messageId };
 }
@@ -778,25 +810,7 @@ export async function sendGroupForwardMessage(
   const forwardId = await ref.bridge.apis.forward.upload(nodes, groupId);
   const previewElement = buildForwardPreviewElement(forwardId, nodes, true, meta);
   const receipt = await ref.bridge.apis.message.sendGroup(groupId, [previewElement]);
-  const messageId = hashMessageIdInt32(receipt.sequence, groupId, GROUP_MESSAGE_EVENT);
-
-  ref.cacheMessageMeta(messageId, {
-    isGroup: true,
-    targetId: groupId,
-    sequence: receipt.sequence,
-    eventName: GROUP_MESSAGE_EVENT,
-    clientSequence: receipt.clientSequence,
-    random: receipt.random,
-    timestamp: receipt.timestamp,
-  });
-  await cacheSelfSentMessage(ref, {
-    isGroup: true,
-    sessionId: groupId,
-    messageId,
-    sequence: receipt.sequence,
-    timestamp: receipt.timestamp,
-    elements: [previewElement],
-  });
+  const messageId = await finalizeSend(ref, true, groupId, receipt, [previewElement]);
 
   return { messageId, forwardId };
 }
@@ -814,25 +828,7 @@ export async function sendPrivateForwardMessage(
   const forwardId = await ref.bridge.apis.forward.upload(nodes, undefined, userId);
   const previewElement = buildForwardPreviewElement(forwardId, nodes, false, meta);
   const receipt = await ref.bridge.apis.message.sendPrivate(userId, [previewElement]);
-  const messageId = hashMessageIdInt32(receipt.sequence, userId, PRIVATE_MESSAGE_EVENT);
-
-  ref.cacheMessageMeta(messageId, {
-    isGroup: false,
-    targetId: userId,
-    sequence: receipt.sequence,
-    eventName: PRIVATE_MESSAGE_EVENT,
-    clientSequence: receipt.clientSequence,
-    random: receipt.random,
-    timestamp: receipt.timestamp,
-  });
-  await cacheSelfSentMessage(ref, {
-    isGroup: false,
-    sessionId: userId,
-    messageId,
-    sequence: receipt.sequence,
-    timestamp: receipt.timestamp,
-    elements: [previewElement],
-  });
+  const messageId = await finalizeSend(ref, false, userId, receipt, [previewElement]);
 
   return { messageId, forwardId };
 }
@@ -881,44 +877,10 @@ export async function forwardSingleMessage(
   let messageIdOut: number;
   if (target.groupId) {
     receipt = await ref.bridge.apis.message.sendGroup(target.groupId, elements);
-    messageIdOut = hashMessageIdInt32(receipt.sequence, target.groupId, GROUP_MESSAGE_EVENT);
-    ref.cacheMessageMeta(messageIdOut, {
-      isGroup: true,
-      targetId: target.groupId,
-      sequence: receipt.sequence,
-      eventName: GROUP_MESSAGE_EVENT,
-      clientSequence: receipt.clientSequence,
-      random: receipt.random,
-      timestamp: receipt.timestamp,
-    });
-    await cacheSelfSentMessage(ref, {
-      isGroup: true,
-      sessionId: target.groupId,
-      messageId: messageIdOut,
-      sequence: receipt.sequence,
-      timestamp: receipt.timestamp,
-      elements,
-    });
+    messageIdOut = await finalizeSend(ref, true, target.groupId, receipt, elements);
   } else {
     receipt = await ref.bridge.apis.message.sendPrivate(target.userId!, elements);
-    messageIdOut = hashMessageIdInt32(receipt.sequence, target.userId!, PRIVATE_MESSAGE_EVENT);
-    ref.cacheMessageMeta(messageIdOut, {
-      isGroup: false,
-      targetId: target.userId!,
-      sequence: receipt.sequence,
-      eventName: PRIVATE_MESSAGE_EVENT,
-      clientSequence: receipt.clientSequence,
-      random: receipt.random,
-      timestamp: receipt.timestamp,
-    });
-    await cacheSelfSentMessage(ref, {
-      isGroup: false,
-      sessionId: target.userId!,
-      messageId: messageIdOut,
-      sequence: receipt.sequence,
-      timestamp: receipt.timestamp,
-      elements,
-    });
+    messageIdOut = await finalizeSend(ref, false, target.userId!, receipt, elements);
   }
 
   return { messageId: messageIdOut };
@@ -1231,7 +1193,13 @@ async function parseForwardNodes(
       continue;
     }
 
-    const userUin = toPositiveInt(nodeData.user_id ?? nodeData.uin);
+    // [#203] A fake forward node may omit user_id or send "0" — upstream
+    // frameworks (AstrBot, etc.) don't manage QQ uins. The protocol端 is logged
+    // in and the core builder already defaults a zero sender to the bot's own
+    // uin (bridge/apis/forward.ts buildForwardPushBody), so match that leniency
+    // here instead of rejecting. The throw stays as a guard for the not-logged-in
+    // case (selfId 0).
+    const userUin = toPositiveInt(nodeData.user_id ?? nodeData.uin) || ref.selfId;
     if (userUin <= 0) throw new Error('forward node user_id/uin is required');
 
     const nickname = String(nodeData.nickname ?? nodeData.name ?? userUin);

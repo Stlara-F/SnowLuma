@@ -64,20 +64,227 @@ export interface QzoneMsgListResult {
 
 /**
  * Parse a Qzone CGI body that may be raw JSON or a JSONP callback wrapper
- * (`_Callback({...});` / `callback({...})`). We slice from the first `{`
- * to the last `}` and JSON.parse that — robust to either form without
- * pinning the callback name, which Qzone varies. Throws if no object body
- * is present (e.g. an HTML error page), which the caller turns into a
- * failed response rather than a silent empty list.
+ * (`_Callback({...});` / `callback({...})`). Uses a layered fallback approach:
+ *
+ * 1. Try direct JSON.parse on the first `{` to last `}` slice.
+ * 2. Try `back({...})` pattern (the original approach).
+ * 3. Extract `back(...)` content, trim, then locate `{}` inside.
+ *
+ * This is robust to the various callback name variants Qzone uses.
+ * Throws if no object body is present (e.g. an HTML error page).
  */
 export function parseQzoneJson<T>(text: string): T {
   const s = text.trim();
-  const start = s.indexOf('{');
-  const end = s.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) {
+
+  // 1st: try direct JSON parse via {}
+  try {
+    const start = s.indexOf('{');
+    const end = s.lastIndexOf('}');
+    if (start !== -1 && end !== -1 && end > start) {
+      return JSON.parse(s.slice(start, end + 1)) as T;
+    }
+  } catch { /* fallback */ }
+
+  // 2nd: try back({...}) as a whole
+  try {
+    const start = s.indexOf('back({');
+    const end = s.lastIndexOf('})');
+    if (start !== -1 && end !== -1 && end > start) {
+      return JSON.parse(s.slice(start + 5, end + 1)) as T;
+    }
+  } catch { /* fallback */ }
+
+  // 3rd: find last back(...); occurrence, then extract {} from within
+  const backStart = s.lastIndexOf('back(');
+  if (backStart === -1) {
     throw new Error('invalid response from qzone api');
   }
-  return JSON.parse(s.slice(start, end + 1)) as T;
+  // find the nearest ');' after back( to delimit the callback invocation
+  const callEnd = s.indexOf(');', backStart);
+  if (callEnd === -1) {
+    throw new Error('invalid response from qzone api');
+  }
+  const inner = s.slice(backStart + 5, callEnd).trim();
+  const braceStart = inner.indexOf('{');
+  const braceEnd = inner.lastIndexOf('}');
+  if (braceStart === -1 || braceEnd === -1 || braceEnd < braceStart) {
+    throw new Error('invalid response from qzone api');
+  }
+  return JSON.parse(inner.slice(braceStart, braceEnd + 1)) as T;
+}
+
+/**
+ * Parse the JavaScript OBJECT-LITERAL payload of a Qzone JSONP feeds response
+ * WITHOUT executing it. feeds3_html_more returns `_preloadCallback({ … })` where
+ * the `data` value uses unquoted keys, single-quoted strings, `\xNN` escapes and
+ * literal `undefined`s — it is meant to be eval'd by the browser callback, so
+ * JSON.parse chokes on it. We ran the alternatives to ground: no param combo
+ * (outputhtmlfeed/format) makes the CGI emit real JSON, and feeds are pure
+ * remote H5 (absent from the native client), so there is no cleaner endpoint.
+ * Rather than eval remote-controlled content (a `vm` sandbox is not a security
+ * boundary — a tampered body escapes it to RCE), we recursively DESCEND the
+ * literal as data: it can only ever produce a value, never run code.
+ *
+ * Handles the subset the CGI emits: objects (unquoted or quoted keys), arrays
+ * (incl. `undefined`/elided holes), single/double-quoted strings with JS escapes
+ * (`\xNN`, `\uNNNN`, `\/`, …), numbers and `true|false|null|undefined`.
+ * `__proto__` keys are dropped (no prototype pollution).
+ */
+function parseJsLiteral(src: string): unknown {
+  let i = 0;
+  const n = src.length;
+  const isWs = (c: string): boolean => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v';
+  const skipWs = (): void => { while (i < n && isWs(src[i]!)) i++; };
+
+  function parseString(quote: string): string {
+    i++; // opening quote
+    let out = '';
+    while (i < n) {
+      const c = src[i]!;
+      if (c === '\\') {
+        const e = src[i + 1];
+        if (e === 'x') { out += String.fromCharCode(parseInt(src.slice(i + 2, i + 4), 16)); i += 4; continue; }
+        if (e === 'u') { out += String.fromCharCode(parseInt(src.slice(i + 2, i + 6), 16)); i += 6; continue; }
+        const simple: Record<string, string> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
+        out += e !== undefined ? (simple[e] ?? e) : ''; // \/ → /, \' → ', unknown → the char
+        i += 2;
+        continue;
+      }
+      if (c === quote) { i++; return out; }
+      out += c;
+      i++;
+    }
+    throw new Error('unterminated string in qzone feeds payload');
+  }
+
+  function parseKey(): string {
+    skipWs();
+    const c = src[i];
+    if (c === '"' || c === "'") return parseString(c);
+    let s = '';
+    while (i < n && /[A-Za-z0-9_$]/.test(src[i]!)) { s += src[i]; i++; }
+    if (!s) throw new Error('expected object key in qzone feeds payload');
+    return s;
+  }
+
+  function parseObject(): Record<string, unknown> {
+    i++; // {
+    const obj: Record<string, unknown> = {};
+    skipWs();
+    if (src[i] === '}') { i++; return obj; }
+    for (;;) {
+      const key = parseKey();
+      skipWs();
+      if (src[i] !== ':') throw new Error('expected ":" in qzone feeds payload');
+      i++;
+      const value = parseValue();
+      if (key !== '__proto__') obj[key] = value;
+      skipWs();
+      const ch = src[i];
+      if (ch === ',') { i++; skipWs(); if (src[i] === '}') { i++; return obj; } continue; }
+      if (ch === '}') { i++; return obj; }
+      throw new Error('expected "," or "}" in qzone feeds payload');
+    }
+  }
+
+  function parseArray(): unknown[] {
+    i++; // [
+    const arr: unknown[] = [];
+    skipWs();
+    if (src[i] === ']') { i++; return arr; }
+    for (;;) {
+      arr.push(parseValue());
+      skipWs();
+      const ch = src[i];
+      if (ch === ',') { i++; skipWs(); if (src[i] === ']') { i++; return arr; } continue; }
+      if (ch === ']') { i++; return arr; }
+      throw new Error('expected "," or "]" in qzone feeds payload');
+    }
+  }
+
+  function parseValue(): unknown {
+    skipWs();
+    const c = src[i];
+    if (c === undefined) throw new Error('unexpected end of qzone feeds payload');
+    if (c === '{') return parseObject();
+    if (c === '[') return parseArray();
+    if (c === '"' || c === "'") return parseString(c);
+    let token = '';
+    while (i < n && !/[,}\]:\s]/.test(src[i]!)) { token += src[i]; i++; }
+    if (token === 'true') return true;
+    if (token === 'false') return false;
+    if (token === 'null') return null;
+    if (token === 'undefined') return undefined;
+    if (token !== '') { const num = Number(token); if (!Number.isNaN(num)) return num; }
+    throw new Error('unexpected token in qzone feeds payload: ' + token.slice(0, 20));
+  }
+
+  return parseValue();
+}
+
+/**
+ * Extract the object a Qzone feeds JSONP body hands to its callback, parsed as
+ * data (never executed — see {@link parseJsLiteral}). Slices from the first `{`
+ * (the callback argument) and parses one balanced value; trailing `);` is
+ * ignored. Throws if the payload is not an object.
+ */
+export function parseQzoneCallback<T>(text: string): T {
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('invalid feeds response from qzone api');
+  const value = parseJsLiteral(text.slice(start));
+  if (value === null || typeof value !== 'object') {
+    throw new Error('invalid feeds response from qzone api');
+  }
+  return value as T;
+}
+
+function assertRichParams(richType?: number, richval?: string): void {
+  const hasRichType = richType !== undefined;
+  const hasRichval = richval !== undefined && richval.trim() !== '';
+  if (hasRichType !== hasRichval) {
+    throw new Error('richType and richval must be provided together');
+  }
+  if (richType !== undefined && (!Number.isInteger(richType) || richType < 1)) {
+    throw new Error('richType must be a positive integer');
+  }
+}
+
+function normalizeQzoneImageBase64(input: string): string {
+  let text = input.trim();
+  if (/^base64:\/\//i.test(text)) {
+    text = text.slice(9).trim();
+  }
+  if (/^data:/i.test(text)) {
+    const comma = text.indexOf(',');
+    if (comma === -1) {
+      throw new Error('imageBase64 data URI is missing base64 payload');
+    }
+    text = text.slice(comma + 1);
+  }
+
+  const compact = text.replace(/ /g, '+').replace(/[\r\n\t]/g, '');
+  if (!compact) {
+    throw new Error('imageBase64 is required');
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    throw new Error('imageBase64 is not valid base64');
+  }
+  const firstPadding = compact.indexOf('=');
+  if (firstPadding !== -1 && /[^=]/.test(compact.slice(firstPadding))) {
+    throw new Error('imageBase64 is not valid base64');
+  }
+
+  const unpadded = compact.replace(/=+$/, '');
+  const remainder = unpadded.length % 4;
+  if (remainder === 1) {
+    throw new Error('imageBase64 is not valid base64');
+  }
+  const base64 = unpadded + '='.repeat((4 - remainder) % 4);
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length === 0) {
+    throw new Error('imageBase64 is empty');
+  }
+  return base64;
 }
 
 /** Pick the largest picture URL variant a feed picture offers. */
@@ -101,11 +308,86 @@ export function mapMsgList(data: RawMsgListResponse): QzoneMsgListResult {
   };
 }
 
+interface MsgListRoute {
+  url: string;
+  headers: Record<string, string>;
+}
+
+/** Legacy route (default): h5.qzone.qq.com → taotao.qzone.qq.com. */
+function legacyMsgListRoute(
+  cookieObject: Record<string, string>,
+  targetUin: string,
+  pos: number,
+  num: number,
+  bkn: string,
+): MsgListRoute {
+  const url = `https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_msglist_v6?${new URLSearchParams(
+    {
+      uin: targetUin,
+      ftype: '0',
+      sort: '0',
+      pos: String(pos),
+      num: String(num),
+      replynum: '100',
+      g_tk: bkn,
+      callback: '_preloadCallback',
+      code_version: '1',
+      format: 'jsonp',
+      need_private_comment: '1',
+    },
+  ).toString()}`;
+  return { url, headers: { Cookie: cookieToString(cookieObject) } };
+}
+
+/**
+ * Fallback route: user.qzone.qq.com → taotao.qq.com (NOT taotao.qzone.qq.com).
+ * Live captures show this pair is not subject to the `-10000` rate-limit the
+ * legacy route can hit.
+ */
+function userMsgListRoute(
+  cookieObject: Record<string, string>,
+  targetUin: string,
+  pos: number,
+  num: number,
+  bkn: string,
+): MsgListRoute {
+  const url = `https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6?${new URLSearchParams(
+    {
+      uin: targetUin,
+      ftype: '0',
+      sort: '0',
+      pos: String(pos),
+      num: String(num),
+      g_tk: bkn,
+      code_version: '1',
+      format: 'json',
+    },
+  ).toString()}`;
+  return {
+    url,
+    headers: {
+      Cookie: cookieToString(cookieObject),
+      Referer: `https://user.qzone.qq.com/${targetUin}`,
+    },
+  };
+}
+
+async function requestMsgList(
+  route: MsgListRoute,
+  targetUin: string,
+): Promise<{ data: RawMsgListResponse; text: string }> {
+  const text = await RequestUtil.HttpGetText(route.url, 'GET', '', route.headers);
+  log.trace('getQzoneMsgList raw body (uin=%s): %s', targetUin, text);
+  return { data: parseQzoneJson<RawMsgListResponse>(text), text };
+}
+
 /**
  * Fetch a 说说 (Qzone emotion/feed) list via the taotao.qzone.qq.com web
  * API, proxied through h5.qzone.qq.com — the same cookie/g_tk plumbing the
  * group-album helper uses. Defaults to the bot's own space; `targetUin`
- * can name any space the bot may view.
+ * can name any space the bot may view. On a `-10000` rate-limit from that
+ * route, retries once via the user.qzone.qq.com route (see
+ * {@link userMsgListRoute}).
  *
  * Errors PROPAGATE: a transport failure, a non-zero `code` (Qzone's own
  * error envelope, e.g. auth/permission), or a missing `msglist` (the body
@@ -126,34 +408,28 @@ export async function getQzoneMsgList(
   }
 
   const bkn = getBknFromCookie(cookieObject);
-  const url = `https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_msglist_v6?${new URLSearchParams(
-    {
-      uin: targetUin,
-      ftype: '0',
-      sort: '0',
-      pos: String(pos),
-      num: String(num),
-      replynum: '100',
-      g_tk: bkn,
-      callback: '_preloadCallback',
-      code_version: '1',
-      format: 'jsonp',
-      need_private_comment: '1',
-    },
-  ).toString()}`;
+  let { data, text } = await requestMsgList(
+    legacyMsgListRoute(cookieObject, targetUin, pos, num, bkn),
+    targetUin,
+  );
 
-  const text = await RequestUtil.HttpGetText(url, 'GET', '', {
-    Cookie: cookieToString(cookieObject),
-  });
-  const data = parseQzoneJson<RawMsgListResponse>(text);
+  // -10000「使用人数过多」is route-specific to the legacy gateway; retry once
+  // via the user.qzone.qq.com route, which live captures show is not limited.
+  if (data.code === -10000) {
+    log.warn('getQzoneMsgList: legacy route rate-limited (uin=%s), retrying via user.qzone route', targetUin);
+    ({ data, text } = await requestMsgList(
+      userMsgListRoute(cookieObject, targetUin, pos, num, bkn),
+      targetUin,
+    ));
+  }
 
   if (typeof data.code === 'number' && data.code !== 0) {
     log.warn('getQzoneMsgList: non-zero code (uin=%s) code=%d msg=%s', targetUin, data.code, data.message);
     throw new Error(`qzone msglist failed: code=${data.code} ${data.message ?? ''}`.trim());
   }
   if (!Array.isArray(data.msglist)) {
-    log.warn('getQzoneMsgList: no msglist in response (uin=%s) — likely auth/cookie failure', targetUin);
-    throw new Error('无法获取空间说说列表');
+    log.warn('getQzoneMsgList: no msglist in response (uin=%s) — likely auth/cookie failure or unverified response shape; body head=%s', targetUin, text.slice(0, 300));
+    throw new Error(`无法获取空间说说列表（响应结构异常）: ${text.slice(0, 200)}`);
   }
 
   return mapMsgList(data);
@@ -213,7 +489,8 @@ export interface QzoneFeedsResult {
 
 /** Pure transform from the raw feeds response into the OneBot list. */
 export function mapFeeds(data: RawFeedsResponse): QzoneFeedsResult {
-  const list = data.data?.data ?? [];
+  // The CGI pads the array with trailing `undefined`/null holes — drop them.
+  const list = (data.data?.data ?? []).filter((f): f is RawFeedItem => !!f);
   return {
     feeds: list.map((f) => ({
       uin: Number(f.uin ?? 0),
@@ -286,15 +563,18 @@ export async function getQzoneFeeds(
   const text = await RequestUtil.HttpGetText(url, 'GET', '', {
     Cookie: cookieToString(cookieObject),
   });
-  const data = parseQzoneJson<RawFeedsResponse>(text);
+  log.trace('getQzoneFeeds raw body (uin=%s): %s', selfUin, text);
+  // feeds3_html_more's payload is a JS object literal, not JSON — parse it as
+  // inert data (see parseQzoneCallback; never executed) rather than JSON.parse.
+  const data = parseQzoneCallback<RawFeedsResponse>(text);
 
   if (typeof data.code === 'number' && data.code !== 0) {
     log.warn('getQzoneFeeds: non-zero code (uin=%s) code=%d msg=%s', selfUin, data.code, data.message);
     throw new Error(`qzone feeds failed: code=${data.code} ${data.message ?? ''}`.trim());
   }
   if (!Array.isArray(data.data?.data)) {
-    log.warn('getQzoneFeeds: no data array in response (uin=%s) — likely auth/cookie failure', selfUin);
-    throw new Error('无法获取空间好友动态');
+    log.warn('getQzoneFeeds: no data array in response (uin=%s) — likely auth/cookie failure or unverified response shape; body head=%s', selfUin, text.slice(0, 300));
+    throw new Error(`无法获取空间好友动态（响应结构异常）: ${text.slice(0, 200)}`);
   }
 
   return mapFeeds(data);
@@ -321,6 +601,8 @@ interface RawPublishResponse {
   now?: number;
 }
 
+export type QzoneUgcRight = 1 | 4 | 16 | 64 | 128;
+
 /** Result of publishing a 说说. */
 export interface QzonePublishResult {
   [key: string]: JsonValue;
@@ -330,10 +612,39 @@ export interface QzonePublishResult {
   time: number;
 }
 
+const QZONE_UGC_RIGHTS = new Set<number>([1, 4, 16, 64, 128]);
+
+function normalizeQzoneUgcRight(ugcRight: number): QzoneUgcRight {
+  if (!QZONE_UGC_RIGHTS.has(ugcRight)) {
+    throw new Error('ugc_right must be one of 1, 4, 16, 64, 128');
+  }
+  return ugcRight as QzoneUgcRight;
+}
+
+function normalizeTargetUins(targetUins?: string): string {
+  const raw = (targetUins ?? '').trim();
+  if (!raw) return '';
+
+  const seen = new Set<string>();
+  for (const part of raw.split('|')) {
+    const uin = part.trim();
+    if (!uin) continue;
+    if (!/^\d+$/.test(uin)) {
+      throw new Error('target_uins must contain QQ numbers separated by |');
+    }
+    seen.add(uin);
+  }
+  return [...seen].join('|');
+}
+
 /**
- * Publish a text-only 说说 via taotao.qzone.qq.com's emotion_cgi_publish_v6
- * CGI (proxied through h5.qzone.qq.com). POSTs a form-urlencoded body with
+ * Publish a 说说 via taotao.qzone.qq.com's emotion_cgi_publish_v6 CGI
+ * (proxied through h5.qzone.qq.com). POSTs a form-urlencoded body with
  * `g_tk` in the query, on the bot's own space (`hostUin`).
+ *
+ * `richType` / `richval`: for image posts, set `richType=1` and pass the
+ * richval string(s) from {@link uploadQzoneImage} (multi-image: join with
+ * `\t`). Omit both for text-only posts.
  *
  * Errors PROPAGATE: a transport failure, a non-zero Qzone `code` (its error
  * envelope, e.g. content rejected / rate-limited), or a success body that
@@ -344,6 +655,10 @@ export async function publishQzoneMsg(
   cookieObject: Record<string, string>,
   hostUin: string,
   content: string,
+  richType?: number,
+  richval?: string,
+  ugcRight = 1,
+  targetUins?: string,
 ): Promise<QzonePublishResult> {
   if (!cookieObject || typeof cookieObject !== 'object') {
     throw new Error('cookieObject is required');
@@ -351,28 +666,37 @@ export async function publishQzoneMsg(
   if (!content) {
     throw new Error('content is required');
   }
+  assertRichParams(richType, richval);
+
+  const right = normalizeQzoneUgcRight(ugcRight);
+  const effectiveTargetUins = right === 16 || right === 128 ? normalizeTargetUins(targetUins) : '';
+  if ((right === 16 || right === 128) && !effectiveTargetUins) {
+    throw new Error('target_uins is required when ugc_right is 16 or 128');
+  }
 
   const bkn = getBknFromCookie(cookieObject);
   const url = `https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6?g_tk=${bkn}`;
-  const body = new URLSearchParams({
+  const bodyParams = new URLSearchParams({
     syn_tweet_verson: '1',
     paramstr: '1',
     pic_template: '',
-    richtype: '',
-    richval: '',
+    richtype: richType !== undefined ? String(richType) : '',
+    richval: richval ?? '',
     special_url: '',
     subrichtype: '',
     con: content,
     feedversion: '1',
     ver: '1',
-    ugc_right: '1',
+    ugc_right: String(right),
     to_sign: '0',
     who: '1',
     hostuin: hostUin,
     code_version: '1',
     format: 'json',
     qzreferrer: `https://user.qzone.qq.com/${hostUin}`,
-  }).toString();
+  });
+  if (effectiveTargetUins) bodyParams.set('allow_uins', effectiveTargetUins);
+  const body = bodyParams.toString();
 
   const text = await RequestUtil.HttpGetText(url, 'POST', body, {
     Cookie: cookieToString(cookieObject),
@@ -546,6 +870,172 @@ export async function setQzoneLike(
   }
 }
 
+// ─────────────── 上传图片 (upload image) — cgi_upload_image ───────────────
+// Uploads an image to Qzone's hosting and returns metadata for use in
+// publish/comment. The image is POSTed as base64 to up.qzone.qq.com
+// (bypassing the h5 proxy — the upload CGI is NOT behind
+// h5.qzone.qq.com/proxy). Body is form-urlencoded with `base64=1` and the
+// base64 payload in `picfile`. Response is a JSONP wrapper (parsed with the
+// shared tolerant parser) carrying `albumid`, `lloc`, `height`, `width`,
+// `type`, and `url`. The `richval` (for publish's richval param) is
+// constructed as `,albumid,lloc,sloc,type,height,width,,height,width` — the
+// double height/width mirrors the PHP impl. WRITE OP — rate-limit (though
+// upload itself is not风控'd like publish, batching huge uploads is impolite).
+// Confirmed against php-qzone/qzone.class.php:97-172.
+
+interface RawUploadImageResponse {
+  code?: number;
+  subcode?: number;
+  message?: string;
+  data?: {
+    albumid?: string;
+    lloc?: string;
+    url?: string;
+    type?: number;
+    height?: number;
+    width?: number;
+  };
+}
+
+/** Result of uploading an image to Qzone. */
+export interface QzoneUploadImageResult {
+  [key: string]: JsonValue;
+  /** Richval string for publish's `richval` param (multi-image: join with `\t`). */
+  richval: string;
+  /** Direct URL to the uploaded image. */
+  url: string;
+  albumid: string;
+  lloc: string;
+  type: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Upload an image from a source (file:// / http:// / base64://) to Qzone
+ * hosting. Loads the image via {@link loadBinarySource}, converts to base64,
+ * and uploads via {@link uploadQzoneImage}.
+ *
+ * `source` supports:
+ * - `file://` local file path
+ * - `http://` or `https://` remote URL
+ * - `base64://` base64-encoded data (with or without data-URI prefix)
+ *
+ * Errors PROPAGATE from both the load step and the upload step.
+ */
+export async function uploadQzoneImageFromSource(
+  cookieObject: Record<string, string>,
+  hostUin: string,
+  source: string,
+): Promise<QzoneUploadImageResult> {
+  if (/^base64:\/\//i.test(source)) {
+    return uploadQzoneImage(cookieObject, hostUin, source);
+  }
+  // Import loadBinarySource at function level to avoid circular deps
+  const { loadBinarySource } = await import('../highway/utils');
+  const loaded = await loadBinarySource(source, 'qzone-image');
+  const base64 = Buffer.from(loaded.bytes).toString('base64');
+  return uploadQzoneImage(cookieObject, hostUin, base64);
+}
+
+/**
+ * Upload an image (as base64) to Qzone hosting via up.qzone.qq.com's
+ * cgi_upload_image CGI. Returns metadata including the `richval` string
+ * (for use in {@link publishQzoneMsg}'s richval param) and the direct URL.
+ * Multi-image publish: call this once per image and join the richval strings
+ * with `\t`.
+ *
+ * `imageBase64` is the raw base64-encoded image bytes; a data-URI prefix is
+ * tolerated and stripped. Errors PROPAGATE: invalid base64, a transport
+ * failure, a non-zero Qzone `code`/`subcode`, or a success body missing
+ * required fields all throw.
+ */
+export async function uploadQzoneImage(
+  cookieObject: Record<string, string>,
+  hostUin: string,
+  imageBase64: string,
+): Promise<QzoneUploadImageResult> {
+  if (!cookieObject || typeof cookieObject !== 'object') {
+    throw new Error('cookieObject is required');
+  }
+  if (!imageBase64) {
+    throw new Error('imageBase64 is required');
+  }
+  const base64 = normalizeQzoneImageBase64(imageBase64);
+
+  const skey = cookieObject['skey'] || '';
+  const pskey = cookieObject['p_skey'] || '';
+  const bkn = getBknFromCookie(cookieObject);
+
+  const url = `https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${bkn}`;
+  const body = new URLSearchParams({
+    filename: 'filename',
+    uin: hostUin,
+    skey,
+    zzpaneluin: hostUin,
+    p_uin: hostUin,
+    p_skey: pskey,
+    uploadtype: '1',
+    albumtype: '7',
+    exttype: '0',
+    refer: 'shuoshuo',
+    output_type: 'jsonhtml',
+    charset: 'utf-8',
+    output_charset: 'utf-8',
+    upload_hd: '1',
+    hd_width: '2048',
+    hd_height: '10000',
+    hd_quality: '96',
+    backUrls: `http://upbak.photo.qzone.qq.com/cgi-bin/upload/cgi_upload_image,http://119.147.64.75/cgi-bin/upload/cgi_upload_image&url=https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image?g_tk=${bkn}`,
+    base64: '1',
+    jsonhtml_callback: 'callback',
+    picfile: base64,
+    qzreferrer: `https://user.qzone.qq.com/${hostUin}/main`,
+  }).toString();
+
+  const text = await RequestUtil.HttpGetText(url, 'POST', body, {
+    Cookie: cookieToString(cookieObject),
+    'Content-Type': 'application/x-www-form-urlencoded',
+  });
+
+  // Response is `<script>frameElement.callback(...JSON...);</script>` — slice
+  // from the first `{` to the last `}` (same as parseQzoneJson, but the
+  // wrapper shape differs slightly).
+  let jsonText = text.trim();
+  const callbackStart = jsonText.indexOf('callback');
+  if (callbackStart !== -1) {
+    jsonText = jsonText.slice(callbackStart);
+  }
+  const data = parseQzoneJson<RawUploadImageResponse>(jsonText);
+
+  if (typeof data.code === 'number' && data.code !== 0) {
+    log.warn('uploadQzoneImage: non-zero code (uin=%s) code=%d msg=%s', hostUin, data.code, data.message);
+    throw new Error(`qzone upload image failed: code=${data.code} ${data.message ?? ''}`.trim());
+  }
+  if (typeof data.subcode === 'number' && data.subcode !== 0) {
+    log.warn('uploadQzoneImage: non-zero subcode (uin=%s) subcode=%d msg=%s', hostUin, data.subcode, data.message);
+    throw new Error(`qzone upload image failed: subcode=${data.subcode} ${data.message ?? ''}`.trim());
+  }
+  if (!data.data || !data.data.albumid || !data.data.lloc || !data.data.url) {
+    log.warn('uploadQzoneImage: missing required fields in response (uin=%s)', hostUin);
+    throw new Error('上传图片失败:响应缺少必要字段');
+  }
+
+  const { albumid, lloc, url: imageUrl, type, height, width } = data.data;
+  const sloc = lloc; // lloc and sloc are identical in the wire format
+  const richval = `,${albumid},${lloc},${sloc},${type ?? 0},${height ?? 0},${width ?? 0},,${height ?? 0},${width ?? 0}`;
+
+  return {
+    richval,
+    url: imageUrl,
+    albumid,
+    lloc,
+    type: type ?? 0,
+    width: width ?? 0,
+    height: height ?? 0,
+  };
+}
+
 // ─────────────── 评论说说 (comment) — emotion_cgi_re_feeds ───────────────
 // Posts a comment on a 说说 owned by `hostUin`, as the bot (`selfUin`). Same
 // form-POST mechanics + param family (paramstr/richtype/richval) as
@@ -576,17 +1066,101 @@ export interface QzoneCommentResult {
 
 /**
  * Comment on a 说说 (`tid`, owned by `hostUin`) as the bot (`selfUin`) via
- * taotao.qzone.qq.com's emotion_cgi_re_feeds CGI (proxied through h5.qzone).
+ * taotao.qzone.qq.com's emotion_cgi_re_feeds CGI (proxied through
+ * h5.qzone.qq.com, matching php-qzone's working request).
+ *
+ * `richType` / `richval`: for image comments, set `richType=1` and pass the
+ * direct image URL from {@link uploadQzoneImage}'s `url` field (NOT the
+ * richval string — comment uses the direct URL, unlike publish which uses
+ * richval). Multi-image comments use direct URLs joined with `\t`. Omit both
+ * for text-only comments.
+ *
  * Resolves with the new comment id (best-effort) on success; THROWS on a
  * transport failure or a non-zero Qzone `code`/`subcode` (e.g. comments
  * disabled, no permission, or auth failure).
  */
+// ─────────────── 拉黑/解拉黑 (ban/unban) — cgi_black_action_new ───────────────
+// Adds or removes a user from the bot's QQ-Zone blacklist. The CGI is
+// w.qzone.qq.com/cgi-bin/right/cgi_black_action_new (proxied through
+// h5.qzone.qq.com). POST form-urlencoded with `action=1` to ban,
+// `action=2` to unban. Response is a callback-wrapped body
+// (frameElement.callback style). Confirmed against
+// php-qzone/qzone.class.php:setQzoneRight. WRITE OP.
+
+interface RawBlackActionResponse {
+  code?: number;
+  subcode?: number;
+  message?: string;
+  msg?: string;
+}
+
+/**
+ * Ban (blacklist) or unban a user in the bot's QQ-Zone space via
+ * w.qzone.qq.com's cgi_black_action_new CGI (proxied through
+ * h5.qzone.qq.com). `ban=true` adds the target to the blacklist
+ * (action=1); `ban=false` removes them (action=2). Resolves on success;
+ * THROWS on a transport failure or a non-zero Qzone `subcode`.
+ * Confirmed against php-qzone/qzone.class.php:setQzoneRight.
+ */
+export async function setQzoneBlack(
+  cookieObject: Record<string, string>,
+  selfUin: string,
+  targetUin: string,
+  ban: boolean,
+): Promise<void> {
+  if (!cookieObject || typeof cookieObject !== 'object') {
+    throw new Error('cookieObject is required');
+  }
+  if (!targetUin) {
+    throw new Error('targetUin is required');
+  }
+
+  const bkn = getBknFromCookie(cookieObject);
+  const url = `https://h5.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/right/cgi_black_action_new?g_tk=${bkn}`;
+  const body = new URLSearchParams({
+    uin: selfUin,
+    act_uin: targetUin,
+    action: ban ? '1' : '2',
+    fupdate: '1',
+    qzreferrer: `https://user.qzone.qq.com/${selfUin}/main`,
+  }).toString();
+
+  const text = await RequestUtil.HttpGetText(url, 'POST', body, {
+    Cookie: cookieToString(cookieObject),
+    'Content-Type': 'application/x-www-form-urlencoded',
+  });
+  // Response is callback-wrapped (frameElement.callback style) and may contain
+  // a small JS-object-literal fragment like `{name:"Ack"}`. Patch the known
+  // unquoted key, then parse via the tolerant JSON/JSONP extractor.
+  let data: RawBlackActionResponse;
+  try {
+    data = parseQzoneJson<RawBlackActionResponse>(text.replace(/\{\s*name\s*:/, '{"name":'));
+  } catch {
+    const snippet = text.trim().slice(0, 300);
+    throw new Error(`qzone ${ban ? 'ban' : 'unban'} failed: ${snippet}${text.length > 300 ? '…' : ''}`);
+  }
+
+  const verb = ban ? 'ban' : 'unban';
+  if (typeof data.subcode === 'number' && data.subcode !== 0) {
+    const msg = data.message ?? data.msg ?? '';
+    log.warn('setQzoneBlack(%s): non-zero subcode (target=%s) subcode=%d msg=%s', verb, targetUin, data.subcode, msg);
+    throw new Error(`qzone ${verb} failed: subcode=${data.subcode} ${msg}`.trim());
+  }
+  if (typeof data.code === 'number' && data.code !== 0) {
+    const msg = data.message ?? data.msg ?? '';
+    log.warn('setQzoneBlack(%s): non-zero code (target=%s) code=%d msg=%s', verb, targetUin, data.code, msg);
+    throw new Error(`qzone ${verb} failed: code=${data.code} ${msg}`.trim());
+  }
+}
+
 export async function commentQzoneMsg(
   cookieObject: Record<string, string>,
   selfUin: string,
   hostUin: string,
   tid: string,
   content: string,
+  richType?: number,
+  richval?: string,
 ): Promise<QzoneCommentResult> {
   if (!cookieObject || typeof cookieObject !== 'object') {
     throw new Error('cookieObject is required');
@@ -597,6 +1171,7 @@ export async function commentQzoneMsg(
   if (!content) {
     throw new Error('content is required');
   }
+  assertRichParams(richType, richval);
 
   const bkn = getBknFromCookie(cookieObject);
   const url = `https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds?g_tk=${bkn}`;
@@ -606,14 +1181,14 @@ export async function commentQzoneMsg(
     inCharset: 'utf-8',
     outCharset: 'utf-8',
     hostUin,
-    format: 'fs',
+    format: 'json',
     ref: 'feeds',
     topicId: `${hostUin}_${tid}__1`,
     feedsType: '100',
     private: '0',
     paramstr: '1',
-    richtype: '',
-    richval: '',
+    richtype: richType !== undefined ? String(richType) : '',
+    richval: richval ?? '',
     isSignIn: '',
     uin: selfUin,
     content,
@@ -639,4 +1214,247 @@ export async function commentQzoneMsg(
 
   const commentId = data.commentid ?? data.commentId;
   return { comment_id: commentId !== undefined ? String(commentId) : '' };
+}
+
+// ─────── 改说说权限 (update right) — emotion_cgi_msgdetail_v6 + emotion_cgi_update ───────
+// Changes the view permission (ugc_right) of an EXISTING 说说. The update CGI
+// is not a partial patch — it re-submits the whole feed (content, richval,
+// pic_bo, …), so the flow is two-step: GET the feed detail from
+// emotion_cgi_msgdetail_v6 (NOTE: proxied domain is taotao.qq.com, not
+// taotao.qzone.qq.com — that's what the working impl hits), rebuild the full
+// publish-shaped payload from it, override ugc_right/allow_uins, and POST to
+// emotion_cgi_update. Both the detail param set and the payload rebuild are
+// CONFIRMED against php-qzone/qzone.class.php updateRight (live-verified
+// there); success signal is `subcode == 0`, same envelope as the siblings.
+// WRITE OP — rate-limit like publish.
+
+interface RawMsgDetailPic {
+  pic_id?: string;
+  pictype?: number | string;
+  type?: number | string;
+  height?: number | string;
+  b_height?: number | string;
+  width?: number | string;
+  b_width?: number | string;
+  smallurl?: string;
+  url1?: string;
+  url2?: string;
+  url3?: string;
+}
+
+interface RawMsgDetailResponse {
+  code?: number;
+  subcode?: number;
+  message?: string;
+  msg?: string;
+  tid?: string;
+  uin?: number | string;
+  content?: string;
+  conlist?: Array<{ con?: string }> | null;
+  pic?: RawMsgDetailPic[] | null;
+  richtype?: number | string;
+  richval?: string;
+  pic_template?: string;
+  special_url?: string;
+  t1_subtype?: number | string;
+  subrichtype?: number | string;
+  feedversion?: number | string;
+  ver?: number | string;
+  ugc_right?: number | string;
+  to_sign?: number | string;
+  ugcright_id?: string;
+  code_version?: number | string;
+}
+
+interface RawUpdateResponse {
+  code?: number;
+  subcode?: number;
+  message?: string;
+  msg?: string;
+  ugc_right?: number | string;
+}
+
+/** Result of changing a 说说's view permission. */
+export interface QzoneUpdateRightResult {
+  [key: string]: JsonValue;
+  /** The feed's ugc_right after the update (echoed by the server when present). */
+  ugc_right: number;
+}
+
+/**
+ * Rebuild the full emotion_cgi_update payload from a msgdetail_v6 response.
+ * Field-for-field port of php-qzone's buildUpdatePayloadFromDetail: richval
+ * strings are reconstructed from each `pic[].pic_id` (`,albumid,lloc,sloc,
+ * type,height,width,,0,0`, tab-joined), `pic_bo` from the `bo=` query param
+ * of any picture URL variant (group tab-doubled), and the content from
+ * `conlist` when present. Exported for tests; THROWS on a detail body it
+ * cannot rebuild from (missing tid, or an image post whose pic info is
+ * unusable) rather than submitting a lossy update.
+ */
+export function buildQzoneUpdatePayload(detail: RawMsgDetailResponse, selfUin: string): URLSearchParams {
+  if (!detail.tid) {
+    throw new Error('qzone msg detail is missing tid');
+  }
+
+  const pics = detail.pic ?? [];
+  const richtype = detail.richtype !== undefined ? Number(detail.richtype) : (pics.length === 0 ? '' : 1);
+  const richvals: string[] = [];
+  const picBoItems: string[] = [];
+
+  for (const pic of pics) {
+    const picId = String(pic.pic_id ?? '');
+    if (!picId) continue;
+
+    const parts = picId.split(',');
+    const albumId = parts[1] ?? '';
+    const lloc = parts[2] ?? '';
+    if (!albumId || !lloc) {
+      throw new Error('qzone msg detail has unsupported pic info');
+    }
+
+    const sloc = lloc;
+    const picType = String(pic.pictype ?? pic.type ?? 22);
+    const height = String(pic.height ?? pic.b_height ?? 0);
+    const width = String(pic.width ?? pic.b_width ?? 0);
+    richvals.push(`,${albumId},${lloc},${sloc},${picType},${height},${width},,0,0`);
+
+    for (const urlKey of ['smallurl', 'url1', 'url2', 'url3'] as const) {
+      const picUrl = pic[urlKey];
+      if (!picUrl) continue;
+      const match = /[?&]bo=([^&#]+)/.exec(picUrl);
+      if (match) {
+        picBoItems.push(decodeURIComponent(match[1]!));
+        break;
+      }
+    }
+  }
+
+  if (richtype === 1 && richvals.length === 0) {
+    throw new Error('qzone image post detail is missing pic info');
+  }
+
+  let content = detail.content ?? '';
+  const conParts = (detail.conlist ?? [])
+    .map((c) => c.con)
+    .filter((c): c is string => c !== undefined);
+  if (conParts.length > 0) {
+    content = conParts.join('').trim();
+  }
+
+  const subrichtype = detail.t1_subtype ?? detail.subrichtype ?? (richvals.length === 0 ? '' : 1);
+  const boGroup = picBoItems.join(',');
+  const picBo = boGroup ? `${boGroup}\t${boGroup}` : '';
+
+  const hostuin = String(detail.uin ?? selfUin);
+  return new URLSearchParams({
+    syn_tweet_verson: '1',
+    tid: String(detail.tid),
+    paramstr: '1',
+    pic_template: detail.pic_template ?? '',
+    richtype: String(richtype),
+    richval: richvals.length > 0 ? richvals.join('\t') : (detail.richval ?? ''),
+    special_url: detail.special_url ?? '',
+    subrichtype: String(subrichtype),
+    pic_bo: picBo,
+    con: content,
+    feedversion: String(detail.feedversion ?? 1),
+    ver: String(detail.ver ?? 1),
+    ugc_right: String(Number(detail.ugc_right ?? 1)),
+    to_sign: String(Number(detail.to_sign ?? 0)),
+    ugcright_id: String(detail.ugcright_id ?? detail.tid),
+    hostuin,
+    code_version: String(detail.code_version ?? 1),
+    format: 'fs',
+    qzreferrer: `https://user.qzone.qq.com/${hostuin}`,
+  });
+}
+
+/** Fetch one 说说's full detail (the update payload's source of truth). */
+async function getQzoneMsgDetail(
+  cookieObject: Record<string, string>,
+  selfUin: string,
+  tid: string,
+): Promise<RawMsgDetailResponse> {
+  const bkn = getBknFromCookie(cookieObject);
+  const url = `https://h5.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msgdetail_v6?${new URLSearchParams(
+    {
+      tid,
+      uin: selfUin,
+      t1_source: '1',
+      not_trunc_con: '1',
+      need_right: '1',
+      not_adapt_outpic: '1',
+      g_tk: bkn,
+    },
+  ).toString()}`;
+
+  const text = await RequestUtil.HttpGetText(url, 'GET', '', {
+    Cookie: cookieToString(cookieObject),
+  });
+  log.trace('getQzoneMsgDetail raw body (tid=%s): %s', tid, text);
+  const data = parseQzoneJson<RawMsgDetailResponse>(text);
+
+  const code = data.subcode ?? data.code ?? -1;
+  if (code !== 0) {
+    log.warn('getQzoneMsgDetail: non-zero code (tid=%s) code=%d msg=%s', tid, code, data.message ?? data.msg);
+    throw new Error(`qzone msg detail failed: code=${code} ${data.message ?? data.msg ?? ''}`.trim());
+  }
+  return data;
+}
+
+/**
+ * Change the view permission of an existing 说说 (`tid`, on the bot's own
+ * space) via the msgdetail_v6 → emotion_cgi_update two-step. `ugcRight` is
+ * one of 1(所有人)/4(好友)/16(部分可见)/64(仅自己)/128(部分不可见);
+ * `targetUins` (|-separated QQ numbers) is required for 16/128 and ignored
+ * otherwise. Errors PROPAGATE from both steps: a transport failure, a
+ * non-zero Qzone code on the detail fetch (unknown/foreign tid, auth), an
+ * unrebuildable detail, or a non-zero `subcode` on the update all throw.
+ */
+export async function updateQzoneMsgRight(
+  cookieObject: Record<string, string>,
+  selfUin: string,
+  tid: string,
+  ugcRight: number,
+  targetUins?: string,
+): Promise<QzoneUpdateRightResult> {
+  if (!cookieObject || typeof cookieObject !== 'object') {
+    throw new Error('cookieObject is required');
+  }
+  if (!tid) {
+    throw new Error('tid is required');
+  }
+
+  const right = normalizeQzoneUgcRight(ugcRight);
+  const effectiveTargetUins = right === 16 || right === 128 ? normalizeTargetUins(targetUins) : '';
+  if ((right === 16 || right === 128) && !effectiveTargetUins) {
+    throw new Error('target_uins is required when ugc_right is 16 or 128');
+  }
+
+  const detail = await getQzoneMsgDetail(cookieObject, selfUin, tid);
+  const bodyParams = buildQzoneUpdatePayload(detail, selfUin);
+  bodyParams.set('ugc_right', String(right));
+  if (effectiveTargetUins) bodyParams.set('allow_uins', effectiveTargetUins);
+
+  const bkn = getBknFromCookie(cookieObject);
+  const url = `https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_update?g_tk=${bkn}`;
+  const text = await RequestUtil.HttpGetText(url, 'POST', bodyParams.toString(), {
+    Cookie: cookieToString(cookieObject),
+    'Content-Type': 'application/x-www-form-urlencoded',
+  });
+  // format=fs wraps the JSON in a callback (`frameElement.callback({...});`
+  // or `_Callback({...});`) — parseQzoneJson's first-{-to-last-} slice
+  // handles every observed variant.
+  const data = parseQzoneJson<RawUpdateResponse>(text);
+
+  if (typeof data.subcode === 'number' && data.subcode !== 0) {
+    log.warn('updateQzoneMsgRight: non-zero subcode (tid=%s) subcode=%d msg=%s', tid, data.subcode, data.message ?? data.msg);
+    throw new Error(`qzone update right failed: subcode=${data.subcode} ${data.message ?? data.msg ?? ''}`.trim());
+  }
+  if (typeof data.code === 'number' && data.code !== 0) {
+    log.warn('updateQzoneMsgRight: non-zero code (tid=%s) code=%d msg=%s', tid, data.code, data.message ?? data.msg);
+    throw new Error(`qzone update right failed: code=${data.code} ${data.message ?? data.msg ?? ''}`.trim());
+  }
+
+  return { ugc_right: Number(data.ugc_right ?? right) };
 }

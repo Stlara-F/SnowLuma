@@ -1,6 +1,5 @@
-import { defineAction, groupAction, groupUserAction, registerActions, f } from '../action-kit';
-import type { ApiActionContext, ApiHandler } from '../api-handler';
-import { RETCODE, failedResponse, okResponse } from '../types';
+import { defineAction, groupAction, groupUserAction, f } from '../action-kit';
+import { okResponse } from '../types';
 
 export const actions = [
   groupUserAction({
@@ -16,7 +15,7 @@ export const actions = [
   groupAction({
     name: 'set_group_kick_members',
     summary: '批量踢出群成员',
-    params: { user_id: f.array(f.uint()).nonEmpty(), reject_add_request: f.bool().default(false) },
+    params: { user_id: f.array(f.memberId()).nonEmpty(), reject_add_request: f.bool().default(false) },
     run: async (p, ctx) => {
       await ctx.bridge.apis.groupAdmin.kickMembers(p.group_id, p.user_id, p.reject_add_request);
       return okResponse();
@@ -26,7 +25,7 @@ export const actions = [
   groupUserAction({
     name: 'set_group_ban',
     summary: '禁言群成员（duration=0 解除）',
-    params: { duration: f.int({ min: 0 }).default(1800) },
+    params: { duration: f.duration().default(1800) },
     run: async (p, ctx) => {
       await ctx.bridge.apis.groupAdmin.muteMember(p.group_id, p.user_id, p.duration);
       return okResponse();
@@ -55,9 +54,13 @@ export const actions = [
 
   groupAction({
     name: 'set_group_search',
-    summary: '允许群被搜索',
+    summary: '设置群被搜索方式（群指纹 / 群号搜索开关）',
+    params: {
+      no_finger_open: f.int({ min: 0 }).optional(),
+      no_code_finger_open: f.int({ min: 0 }).optional(),
+    },
     run: async (p, ctx) => {
-      await ctx.bridge.apis.groupAdmin.setSearch(p.group_id);
+      await ctx.bridge.apis.groupAdmin.setSearch(p.group_id, p.no_finger_open, p.no_code_finger_open);
       return okResponse();
     },
   }),
@@ -118,18 +121,11 @@ export const actions = [
   groupAction({
     name: 'set_group_portrait',
     summary: '设置群头像',
-    params: { file: f.string({ allowEmpty: false }) },
+    params: { file: f.image() },
     run: async (p, ctx) => {
-      try {
-        await ctx.bridge.apis.profile.setGroupAvatar(p.group_id, p.file);
-        return okResponse();
-      } catch (err) {
-        return failedResponse(RETCODE.ACTION_FAILED, err instanceof Error ? err.message : String(err));
-      }
+      await ctx.bridge.apis.profile.setGroupAvatar(p.group_id, p.file);
+      return okResponse();
     },
   }),
 ];
 
-export function register(h: ApiHandler, ctx: ApiActionContext): void {
-  registerActions(h, ctx, actions);
-}

@@ -13,7 +13,7 @@ import { protobuf_decode, protobuf_encode } from '@snowluma/proton';
 import crypto from 'crypto';
 import type { BridgeContext } from '../bridge-context';
 import { makeOidbEnvelope } from '../bridge-oidb';
-import { buildHighwayExtend, fetchHighwaySession, uploadHighwayHttp } from './highway-client';
+import { BufferChunkSource, FileChunkSource, buildHighwayExtend, fetchHighwaySession, uploadHighwayHttp } from './highway-client';
 
 const moduleLog = createLogger('Highway');
 
@@ -37,8 +37,13 @@ export interface MediaSubFileUpload {
   cmdId: number;
   /** Bytes to upload. Empty when the caller is forwarding from cached
    *  fingerprints; in that case set fastOnlyError so we throw with a
-   *  typed message when the server actually demands the bytes. */
+   *  typed message when the server actually demands the bytes. Also empty
+   *  when `fileSource` is set (the bytes are streamed from disk instead). */
   bytes: Uint8Array;
+  /** When set, this sub-file streams from a disk file instead of `bytes`
+   *  (which should be empty). runPuts opens a `FileChunkSource`; all size /
+   *  data-presence decisions use `fileSource.fileSize`, not `bytes.length`. */
+  fileSource?: { filePath: string; fileSize: number };
   /** md5 used for the highway request. */
   md5: Uint8Array;
   /** sha1 — single buffer or per-1MB block array. Passed verbatim to
@@ -51,16 +56,6 @@ export interface MediaSubFileUpload {
    *  Omit if the caller guarantees bytes always exist (e.g. video thumb
    *  always has FALLBACK_THUMB bytes). */
   fastOnlyError?: string;
-  /** When true and the server fast-paths THIS sub-file (returns no uKey)
-   *  even though we hold real bytes for it, `runNtv2Upload` re-issues the
-   *  whole OIDB request with `tryFastUploadCompleted: false` to force a
-   *  fresh full upload. Video sets this on the main file: group/c2c video
-   *  resources expire server-side, so a fast-path hit can reference a
-   *  stale object the receiver renders as "资源已过期". The thumb leaves
-   *  this off — a cached thumb is harmless and not worth re-pushing the
-   *  whole (potentially 100 MB) main video for. Forwarding paths carry no
-   *  bytes (`bytes.length === 0`), so this never fires for them. */
-  forceFullOnFastPath?: boolean;
 }
 
 export interface NtV2UploadParams {
@@ -195,29 +190,28 @@ export async function runNtv2Upload(params: NtV2UploadParams): Promise<NTV2Uploa
     return session;
   };
 
-  // Run whatever PUTs the given `upload` response asks for. Returns true
-  // when a sub-file flagged `forceFullOnFastPath` was fast-pathed by the
-  // server (no uKey) while we hold real bytes for it — the caller uses
-  // that to force a non-fast-upload retry.
-  const runPuts = async (upload: NTV2UploadRespBody): Promise<boolean> => {
+  // Run whatever PUTs the given `upload` response asks for.
+  const runPuts = async (upload: NTV2UploadRespBody): Promise<void> => {
     let didPut = false;
-    let staleFastPath = false;
     for (const sub of uploads) {
       const target = sub.source === 'top' ? upload : upload.subFileInfos?.[sub.source];
       const uKey = target?.uKey ?? '';
+      // Data size / presence comes from fileSource (streamed) when set, else
+      // from the in-memory bytes — a streamed sub-file has empty `bytes`, so
+      // keying the checks below on `bytes.length` would wrongly treat it as a
+      // fast-only / empty sub-file.
+      const subSize = sub.fileSource ? sub.fileSource.fileSize : sub.bytes.length;
       // No uKey: the server fast-pathed this sub-file (or msgInfo is absent
-      // entirely). When we actually hold bytes for it, the server is
-      // reusing a cached resource — surface it, and flag a stale fast-path
-      // when the caller asked us to distrust it for this sub-file.
+      // entirely) — it already holds (or claims to hold) the resource, so
+      // there are no bytes to push for it.
       if (!uKey || !upload.msgInfo) {
-        if (!uKey && upload.msgInfo && sub.bytes.length > 0) {
+        if (!uKey && upload.msgInfo && subSize > 0) {
           log.debug('%s fast-upload hit for sub=%s (server reusing cached resource)', label, String(sub.source));
-          if (sub.forceFullOnFastPath) staleFastPath = true;
         }
         continue;
       }
 
-      if (sub.bytes.length === 0) {
+      if (subSize === 0) {
         if (sub.fastOnlyError) throw new Error(sub.fastOnlyError);
         continue;
       }
@@ -231,9 +225,18 @@ export async function runNtv2Upload(params: NtV2UploadParams): Promise<NTV2Uploa
         sub.sha1,
         sub.subFileIndex ?? 0,
       );
-      log.debug('%s OIDB requires bytes, PUT %d bytes (sub=%s)', label, sub.bytes.length, String(sub.source));
+      // Resolve the (lazy, cached) session BEFORE opening the ChunkSource, so
+      // there is no fallible await between opening the FileChunkSource handle
+      // and the uploadHighwayHttp call that owns closing it — otherwise a
+      // session-fetch failure on the first PUT would leak the open handle.
+      const putSession = await getSession();
+      // uploadHighwayHttp owns the ChunkSource and closes it exactly once.
+      const chunkSource = sub.fileSource
+        ? await FileChunkSource.open(sub.fileSource.filePath, sub.fileSource.fileSize)
+        : new BufferChunkSource(sub.bytes);
+      log.debug('%s OIDB requires bytes, PUT %d bytes (sub=%s)', label, subSize, String(sub.source));
       const t0 = Date.now();
-      await uploadHighwayHttp(bridge, await getSession(), sub.cmdId, sub.bytes, sub.md5, extend);
+      await uploadHighwayHttp(bridge, putSession, sub.cmdId, chunkSource, sub.md5, extend);
       log.debug('%s PUT done in %dms', label, Date.now() - t0);
       didPut = true;
     }
@@ -241,26 +244,19 @@ export async function runNtv2Upload(params: NtV2UploadParams): Promise<NTV2Uploa
     if (!didPut) {
       log.debug('%s fast-upload hit (server already had bytes)', label);
     }
-    return staleFastPath;
   };
 
-  let upload = await requestUpload(true);
-  const staleFastPath = await runPuts(upload);
-
-  // A flagged sub-file (video main) was fast-pathed to a server resource
-  // that may have expired. Re-issue without fast-upload so the server
-  // allocates a fresh resource and demands the bytes, then redo the PUTs
-  // against that response — the returned `upload` (and its msgInfo) must
-  // be the one we actually pushed bytes to.
-  if (staleFastPath) {
-    log.debug('%s forcing full upload — fast-path resource may be stale/expired', label);
-    upload = await requestUpload(false);
-    const stillFastPathed = await runPuts(upload);
-    if (stillFastPathed) {
-      log.debug('%s server still fast-pathed after forcing full upload — resource may remain stale', label);
-    }
-  }
-
+  // NOTE: a previous attempt re-issued the request with
+  // `tryFastUploadCompleted: false` when the server fast-pathed the main video,
+  // on the theory it would force a fresh upload of a possibly-expired resource.
+  // Real-machine testing + kernel RE proved that ineffective — the server's
+  // fast-path is driven by md5-metadata existence and ignores the flag, and the
+  // QQ NT kernel itself does no validity check either (HandleRspUploadV3 trusts
+  // `fileExist` and reports success). An expired-but-still-indexed video
+  // resource is a platform-level limitation, not something the upload flow can
+  // refresh. See #145.
+  const upload = await requestUpload(true);
+  await runPuts(upload);
   return upload;
 }
 

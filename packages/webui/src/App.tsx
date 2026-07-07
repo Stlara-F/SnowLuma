@@ -7,6 +7,8 @@ import { LoginPage } from '@/components/pages/login-page';
 import { ChangePasswordPage } from '@/components/pages/change-password-page';
 import { ConsentPage } from '@/components/pages/consent-page';
 import { ApiProvider, createApiClient, useApi, type ApiClient } from '@/lib/api';
+import { DebugTaskProvider } from '@/contexts/DebugTaskContext';
+import { TaskBadge } from '@/components/debug/task-badge';
 import type { AgreementsPayload } from '@/lib/api/types';
 import { appRouter } from '@/router';
 
@@ -16,6 +18,24 @@ export default function App() {
       <AuthBoundary />
     </ThemeProvider>
   );
+}
+
+// #194: read a one-shot `?token=<password>` login param and immediately strip
+// it from the URL (replaceState) so the credential doesn't linger in the
+// address bar / browser history / Referer header. Named `token` to match the
+// requested query key; the value is the WebUI login password.
+function consumeUrlToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const url = new URL(window.location.href);
+    const value = url.searchParams.get('token');
+    if (!value) return null;
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    return value;
+  } catch {
+    return null;
+  }
 }
 
 function AuthBoundary() {
@@ -58,11 +78,28 @@ function AuthBoundary() {
 
   useEffect(() => {
     (async () => {
-      const ok = await client.status();
+      let ok = await client.status();
+      // #194: `?token=<password>` in the URL logs in without typing the
+      // password. Only attempted when no stored token already authed us; the
+      // value is the WebUI login password (verified by /api/login server-side,
+      // so a wrong one just falls through to the login page). The param is
+      // consumed once and stripped from the URL first — a password in the
+      // address bar leaks via browser history / access logs / the Referer.
+      let urlPassword: string | undefined;
+      if (!ok) {
+        const pw = consumeUrlToken();
+        if (pw) {
+          const result = await client.login(pw);
+          if (result.ok) { ok = true; urlPassword = pw; }
+        }
+      }
       if (ok) {
         setAuthed(true);
         setStatus('已连接');
         setMustChange(await client.mustChangePassword());
+        // Carry the URL password into the forced change-password gate so it
+        // needn't re-prompt for the old password (matches the login flow).
+        if (urlPassword) setLoginPassword(urlPassword);
         await refreshAgreements();
       }
       setAuthChecked(true);
@@ -132,7 +169,10 @@ function AuthBoundary() {
 
   return (
     <ApiProvider client={client}>
-      <TooltipProvider delayDuration={150}>{view}</TooltipProvider>
+      <DebugTaskProvider>
+        <TooltipProvider delayDuration={150}>{view}</TooltipProvider>
+        <TaskBadge />
+      </DebugTaskProvider>
     </ApiProvider>
   );
 }

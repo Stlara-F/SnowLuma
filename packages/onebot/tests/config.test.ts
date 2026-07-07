@@ -24,7 +24,6 @@ describe('makeDefaultOneBotConfig', () => {
     expect(config.networks.wsServers[0].messageFormat).toBe('array');
     expect(config.networks.wsServers[0].reportSelfMessage).toBe(false);
     expect(config.networks.wsClients).toEqual([]);
-    expect(config.musicSignUrl).toBe('');
     expect(config.statusCommand).toEqual({ enabled: true, swallow: false, cooldownSeconds: 5, trigger: '#sl' });
     expect(config.notifications).toEqual({ channelIds: [] });
   });
@@ -61,30 +60,6 @@ describe('loadOneBotConfig', () => {
     expect(onDisk.wsServers).toBeUndefined();
     // statusCommand is materialised with defaults on a fresh install.
     expect(onDisk.statusCommand).toEqual({ enabled: true, swallow: false, cooldownSeconds: 5, trigger: '#sl' });
-  });
-
-  it('defaults rkey.fallbackServers to empty (feature off)', () => {
-    const config = loadOneBotConfig('10055');
-    expect(config.rkey).toEqual({ fallbackServers: [] });
-  });
-
-  it('parses, validates (http only), dedupes and round-trips rkey.fallbackServers', () => {
-    const uin = '10056';
-    const dir = path.join(tempDir, 'config');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, `onebot_${uin}.json`),
-      JSON.stringify({ rkey: { fallbackServers: ['https://a.example/r', 'not-a-url', 'https://a.example/r', 'http://b.example/r', 42] } }),
-      'utf8',
-    );
-
-    const config = loadOneBotConfig(uin);
-    expect(config.rkey.fallbackServers).toEqual(['https://a.example/r', 'http://b.example/r']);
-
-    saveOneBotConfig(uin, config);
-    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, `onebot_${uin}.json`), 'utf8'));
-    expect(onDisk.rkey).toEqual({ fallbackServers: ['https://a.example/r', 'http://b.example/r'] });
-    expect(loadOneBotConfig(uin).rkey.fallbackServers).toEqual(['https://a.example/r', 'http://b.example/r']);
   });
 
   it('fills statusCommand defaults and clamps a negative cooldown', () => {
@@ -142,8 +117,6 @@ describe('loadOneBotConfig', () => {
     expect(config.networks.wsClients[0].url).toBe('ws://127.0.0.1:8080');
     expect(config.networks.wsClients[0].messageFormat).toBe('string');
     expect(config.networks.wsClients[0].reportSelfMessage).toBe(true);
-
-    expect(config.musicSignUrl).toBe('https://example.com/sign');
 
     // File should now be in unified format on disk.
     const onDisk = JSON.parse(fs.readFileSync(path.join(dir, `onebot_${uin}.json`), 'utf8'));
