@@ -23,6 +23,16 @@ jobs:
           - name: linux-arm64
             os: ubuntu-24.04-arm
             target: linux-arm64
+          # VNC-enabled variants for Docker images (build with __VNC_ENABLED__).
+          # The Docker Framework downloads *-vnc-lite.tar.gz for image builds.
+          - name: linux-x64-vnc
+            os: ubuntu-latest
+            target: linux-x64
+            vnc: true
+          - name: linux-arm64-vnc
+            os: ubuntu-24.04-arm
+            target: linux-arm64
+            vnc: true
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -49,6 +59,7 @@ jobs:
       - name: Build project
         env:
           SNOWLUMA_TARGET: ${{ matrix.target }}
+          VITE_VNC_ENABLED: ${{ matrix.vnc && 'true' || '' }}
         run: pnpm run build:all
 
       - name: Bundle runtime dependencies
@@ -207,6 +218,7 @@ jobs:
                 push: 'true',
                 platforms,
                 snowluma_tag: tag,
+                snowluma_artifact_suffix: '-vnc',
                 snowluma_repository: sourceRepo,
               },
             });
