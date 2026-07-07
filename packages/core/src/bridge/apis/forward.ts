@@ -163,7 +163,9 @@ async function buildForwardPushBody(
       subType: 4,
       msgId: random,
       sequence: seq,
-      timestamp: now,
+      // Honour a custom per-node display time (#209); default to now. `now`
+      // still drives the c2c-file expireTime above, which must stay real.
+      timestamp: node.time && node.time > 0 ? node.time : now,
       c2cCmd: 0,
     },
     body: {
@@ -716,6 +718,9 @@ export class ForwardApi {
       if (!event) continue;
 
       if (event.kind === 'group_message') {
+        // [#201] The merged-forward sender name now comes through the group
+        // decoder (event.senderNick), which reads grp.memberCard (field 4) when
+        // there's no member cache — exactly the forward-node case.
         out.push({
           userUin: event.senderUin,
           nickname: event.senderCard || event.senderNick,

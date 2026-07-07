@@ -4,12 +4,15 @@ import {
   getQzoneFeeds,
   getQzoneMsgList,
   publishQzoneMsg,
+  setQzoneBlack,
   setQzoneLike,
+  updateQzoneMsgRight,
   uploadQzoneImageFromSource,
   type QzoneCommentResult,
   type QzoneFeedsResult,
   type QzoneMsgListResult,
   type QzonePublishResult,
+  type QzoneUpdateRightResult,
   type QzoneUploadImageResult,
 } from '@snowluma/protocol/web/qzone';
 import type { BridgeContext } from '../bridge-context';
@@ -75,6 +78,15 @@ export class QzoneApi {
   }
 
   /**
+   * 修改机器人自己空间一条已发说说的查看权限（按 tid）。
+   * `ugcRight` / `targetUins` 含义同 publish（16/128 时 targetUins 必填）。
+   */
+  async updateRight(tid: string, ugcRight: number, targetUins?: string): Promise<QzoneUpdateRightResult> {
+    const cookieObject = await this.ctx.apis.web.getCookies('qzone.qq.com');
+    return updateQzoneMsgRight(cookieObject, this.ctx.identity.uin, tid, ugcRight, targetUins);
+  }
+
+  /**
    * 给一条说说点赞/取消赞。`targetUin` 省略时点赞机器人自己空间的说说；
    * 点赞好友说说时传好友 uin（tid 来自 get_qzone_feeds / get_qzone_msg_list）。
    */
@@ -102,5 +114,15 @@ export class QzoneApi {
     const owner = targetUin && targetUin > 0 ? targetUin.toString() : selfUin;
     const cookieObject = await this.ctx.apis.web.getCookies('qzone.qq.com');
     return commentQzoneMsg(cookieObject, selfUin, owner, tid, content, richType, richval);
+  }
+
+  /**
+   * 拉黑或解除拉黑某人（修改机器人自身 QQ 空间黑名单）。
+   * `ban=true` 拉黑，`ban=false` 解除拉黑。
+   */
+  async setBlack(targetUin: number, ban: boolean): Promise<void> {
+    const selfUin = this.ctx.identity.uin;
+    const cookieObject = await this.ctx.apis.web.getCookies('qzone.qq.com');
+    await setQzoneBlack(cookieObject, selfUin, targetUin.toString(), ban);
   }
 }

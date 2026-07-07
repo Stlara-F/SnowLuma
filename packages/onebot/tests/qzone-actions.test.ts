@@ -62,4 +62,61 @@ describe('qzone actions', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('set_qzone_msg_right joins target_uins with | and passes through', async () => {
+    const updateRight = vi.fn().mockResolvedValue({ ugc_right: 16 });
+    const handler = makeHandler({ updateRight });
+
+    const res = await handler.handle('set_qzone_msg_right', {
+      tid: 'T1',
+      ugc_right: 16,
+      target_uins: [10001, 10002],
+    });
+
+    expect(res).toMatchObject({ status: 'ok', retcode: 0, data: { ugc_right: 16 } });
+    expect(updateRight).toHaveBeenCalledWith('T1', 16, '10001|10002');
+  });
+
+  it('set_qzone_msg_right rejects invalid ugc_right and 16/128 without target_uins', async () => {
+    const updateRight = vi.fn();
+    const handler = makeHandler({ updateRight });
+
+    const bad = await handler.handle('set_qzone_msg_right', { tid: 'T1', ugc_right: 2 });
+    expect(bad).toMatchObject({ status: 'failed' });
+
+    const missing = await handler.handle('set_qzone_msg_right', { tid: 'T1', ugc_right: 128 });
+    expect(missing).toMatchObject({ status: 'failed' });
+
+    expect(updateRight).not.toHaveBeenCalled();
+  });
+
+  it('set_qzone_ban with enable=true calls setBlack with ban=true', async () => {
+    const setBlack = vi.fn().mockResolvedValue(undefined);
+    const handler = makeHandler({ setBlack });
+
+    const res = await handler.handle('set_qzone_ban', { user_id: 12345, enable: true });
+
+    expect(res).toMatchObject({ status: 'ok', retcode: 0 });
+    expect(setBlack).toHaveBeenCalledWith(12345, true);
+  });
+
+  it('set_qzone_ban with enable=false calls setBlack with ban=false', async () => {
+    const setBlack = vi.fn().mockResolvedValue(undefined);
+    const handler = makeHandler({ setBlack });
+
+    const res = await handler.handle('set_qzone_ban', { user_id: 12345, enable: false });
+
+    expect(res).toMatchObject({ status: 'ok', retcode: 0 });
+    expect(setBlack).toHaveBeenCalledWith(12345, false);
+  });
+
+  it('set_qzone_ban defaults enable to true', async () => {
+    const setBlack = vi.fn().mockResolvedValue(undefined);
+    const handler = makeHandler({ setBlack });
+
+    const res = await handler.handle('set_qzone_ban', { user_id: 12345 });
+
+    expect(res).toMatchObject({ status: 'ok', retcode: 0 });
+    expect(setBlack).toHaveBeenCalledWith(12345, true);
+  });
+
 });

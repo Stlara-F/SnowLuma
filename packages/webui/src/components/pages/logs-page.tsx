@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowDownToLine, Download, Filter, Highlighter, Inbox, Pause, Plus, RefreshCw, Search, SearchX, SlidersHorizontal, Trash2, WrapText, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -13,13 +14,17 @@ import { useApi } from '@/lib/api';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useLayout } from '@/contexts/LayoutContext';
 
+// Dedicated log-level text tokens (see index.css): the app accent colors are
+// too light as small text on the light canvas (WCAG AA fails), so these hit
+// >=4.5:1 in light mode while keeping the bright values in dark. trace stays the
+// faintest level (dimmer than debug) but at /90 it now also clears AA.
 const levelClass: Record<LogLevel, string> = {
-  trace: 'text-muted-foreground/60',
+  trace: 'text-muted-foreground/90',
   debug: 'text-muted-foreground',
-  info: 'text-primary',
-  success: 'text-success',
-  warn: 'text-warning',
-  error: 'text-destructive',
+  info: 'text-log-info',
+  success: 'text-log-success',
+  warn: 'text-log-warn',
+  error: 'text-log-error',
 };
 
 const LEVELS: LogLevel[] = ['trace', 'debug', 'info', 'success', 'warn', 'error'];
@@ -87,7 +92,7 @@ function ToolButton({ label, onClick, children, active, danger, disabled }: Tool
 
 export function LogsPage() {
   const api = useApi();
-  const { formatClock, appearance } = useTheme();
+  const { formatClock } = useTheme();
   const { pages, setPages } = useLayout();
   const prefs = pages.logs;
 
@@ -100,7 +105,7 @@ export function LogsPage() {
   const [showOptions, setShowOptions] = useState(false);
   const [newKeyword, setNewKeyword] = useState('');
   const [newColor, setNewColor] = useState(HIGHLIGHT_COLORS[0].id);
-  const endRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // maxLines is read through a ref so changing it doesn't re-subscribe the SSE.
   const maxLines = prefs.maxLines;
@@ -141,9 +146,27 @@ export function LogsPage() {
   }, [api, serverLevel, levelBusy]);
 
   useEffect(() => {
-    return api.logs.stream({
+    // Batch incoming lines: buffer in a ref and flush on a ~80ms timer instead
+    // of a per-line setState. Under a high log rate this turns N O(n) array
+    // copies + N React commits per window into one. Dedup-by-id and the
+    // maxLines cap are preserved (a reconnect can replay recent ids).
+    let pending: LogEntry[] = [];
+    let flushTimer: number | null = null;
+    const flush = () => {
+      flushTimer = null;
+      if (pending.length === 0) return;
+      const batchMap = new Map(pending.map((e) => [e.id, e] as const));
+      pending = [];
+      setLogs((prev) => {
+        const kept = prev.length ? prev.filter((it) => !batchMap.has(it.id)) : prev;
+        const merged = kept.length ? [...kept, ...batchMap.values()] : [...batchMap.values()];
+        return merged.length > maxLinesRef.current ? merged.slice(-maxLinesRef.current) : merged;
+      });
+    };
+    const dispose = api.logs.stream({
       onLine: (entry) => {
-        setLogs((prev) => [...prev.filter((it) => it.id !== entry.id), entry].slice(-maxLinesRef.current));
+        pending.push(entry);
+        if (flushTimer == null) flushTimer = window.setTimeout(flush, 80);
       },
       onStatus: (s) => {
         if (s === 'open') setStreamStatus('实时');
@@ -151,12 +174,11 @@ export function LogsPage() {
         else setStreamStatus('已断开');
       },
     });
+    return () => {
+      dispose();
+      if (flushTimer != null) clearTimeout(flushTimer);
+    };
   }, [api]);
-
-  useEffect(() => {
-    if (!prefs.autoScroll) return;
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [logs, prefs.autoScroll]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -172,6 +194,40 @@ export function LogsPage() {
       );
     });
   }, [logs, filter, enabled, maxLines]);
+
+  // Virtualize the log rows: only the visible window (+overscan) is mounted, so
+  // the DOM stays at a few dozen nodes regardless of how many lines the view
+  // holds. Rows are dynamically measured (measureElement) so wrap mode's
+  // variable-height lines are handled without a fixed row-height assumption.
+  const rowVirtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 28,
+    overscan: 12,
+    // Key the size cache by row id, not index: the list is front-dropped at the
+    // maxLines cap, so every surviving row's index shifts down each flush. Keying
+    // by id keeps each measured height with its content (and matches the React
+    // key), avoiding a one-frame height mis-attribution on off-screen rows.
+    getItemKey: (index) => filtered[index]?.id ?? index,
+  });
+
+  // Toggling wrap changes every row's height — force a clean re-measure so the
+  // cached sizes don't leave gaps/overlaps.
+  useEffect(() => { rowVirtualizer.measure(); }, [prefs.wrap, rowVirtualizer]);
+
+  // Follow the tail while auto-scroll is on. Re-run on anything that changes the
+  // visible set or row heights (new logs, filter/level/maxLines → filtered.length,
+  // wrap → heights), not just new logs. Freshly-appended rows still carry the
+  // estimate on this pass, so a second pin on the next frame (after ResizeObserver
+  // measures them) reaches the true bottom in wrap mode.
+  useEffect(() => {
+    if (!prefs.autoScroll || filtered.length === 0) return;
+    const last = filtered.length - 1;
+    rowVirtualizer.scrollToIndex(last, { align: 'end' });
+    const raf = requestAnimationFrame(() => rowVirtualizer.scrollToIndex(last, { align: 'end' }));
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logs, filtered.length, prefs.autoScroll, prefs.wrap]);
 
   // Any hand edit to the bundled prefs drops the active preset to 'custom'.
   const toggleLevel = (lv: LogLevel) => {
@@ -471,17 +527,18 @@ export function LogsPage() {
       {/* ── Log stream ──────────────────────────────────────────── */}
       <CardContent className="flex min-h-0 flex-1 flex-col pt-0">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-muted/20">
-          <ScrollArea className="min-h-0 flex-1" viewportClassName="[&>div]:!block">
+          {/* Column header lives OUTSIDE the scroll viewport so the virtualizer's
+              scroll element contains only the rows (no sticky-offset math). */}
+          {filtered.length > 0 && (
+            <div className="hidden items-center gap-3 border-b border-border/60 bg-card/60 px-3 py-2 font-mono text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 sm:flex">
+              <span className="w-[104px] shrink-0">时间</span>
+              <span className="w-[76px] shrink-0">级别</span>
+              <span className="w-28 shrink-0">模块</span>
+              <span className="flex-1">消息</span>
+            </div>
+          )}
+          <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1" viewportClassName="[&>div]:!block">
             <div className="font-mono text-xs">
-              {filtered.length > 0 && (
-                <div className="sticky top-0 z-10 hidden items-center gap-3 border-b border-border/60 bg-card/75 px-3 py-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70 backdrop-blur-md sm:flex">
-                  <span className="w-[104px] shrink-0">时间</span>
-                  <span className="w-[76px] shrink-0">级别</span>
-                  <span className="w-28 shrink-0">模块</span>
-                  <span className="flex-1">消息</span>
-                </div>
-              )}
-
               {filtered.length === 0 ? (
                 <div className="flex min-h-60 flex-col items-center justify-center gap-3 px-4 py-10 text-center font-sans text-muted-foreground">
                   {logs.length === 0 ? (
@@ -498,17 +555,21 @@ export function LogsPage() {
                   )}
                 </div>
               ) : (
-                <div className="divide-y divide-border/30">
-                  {filtered.map((log) => {
+                <div className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+                  {rowVirtualizer.getVirtualItems().map((vRow) => {
+                    const log = filtered[vRow.index];
+                    if (!log) return null; // guard a transient count/measurement skew
                     const hl = matchHighlight(log.message, prefs.highlightRules);
                     return (
-                      <motion.div
+                      <div
                         key={log.id}
-                        initial={appearance.disableMotion ? false : { opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={appearance.disableMotion ? { duration: 0 } : { duration: 0.12 }}
-                        className="flex flex-col gap-0.5 px-3 py-1.5 transition-colors hover:bg-accent/40 sm:flex-row sm:items-start sm:gap-3 sm:py-1"
-                        style={hl ? { boxShadow: `inset 3px 0 0 ${hl}`, backgroundColor: `color-mix(in oklab, ${hl} 8%, transparent)` } : undefined}
+                        data-index={vRow.index}
+                        ref={rowVirtualizer.measureElement}
+                        className="absolute left-0 top-0 flex w-full flex-col gap-0.5 border-b border-border/30 px-3 py-1.5 transition-colors hover:bg-accent/40 sm:flex-row sm:items-start sm:gap-3 sm:py-1"
+                        style={{
+                          transform: `translateY(${vRow.start}px)`,
+                          ...(hl ? { boxShadow: `inset 3px 0 0 ${hl}`, backgroundColor: `color-mix(in oklab, ${hl} 8%, transparent)` } : {}),
+                        }}
                       >
                         <div className="flex items-center gap-3 sm:contents">
                           <span className="w-[104px] shrink-0 tabular-nums text-muted-foreground">{formatClock(log.time)}</span>
@@ -527,12 +588,11 @@ export function LogsPage() {
                           )}
                           {log.message}
                         </span>
-                      </motion.div>
+                      </div>
                     );
                   })}
                 </div>
               )}
-              <div ref={endRef} />
             </div>
           </ScrollArea>
         </div>

@@ -13,6 +13,7 @@ import { IncomingPacketPipeline } from '@snowluma/protocol/packet-pipeline';
 import { BridgeEventBus } from '@snowluma/protocol/event-bus';
 import { IdentityService } from '@snowluma/protocol/identity-service';
 import type { QQEventVariant } from '@snowluma/protocol/events';
+import type { GroupMemberInfo, QQGroupInfo } from '@snowluma/protocol/qq-info';
 import type { PacketInfo } from '@snowluma/common/protocol-types';
 
 function makePipeline(opts: {
@@ -290,5 +291,126 @@ describe('IncomingPacketPipeline / stranger resolve on group_invite', () => {
     expect(resolveStrangerProfile).not.toHaveBeenCalled();
     expect(resolveGroupJoinRequest).not.toHaveBeenCalled();
     expect(captured).toHaveLength(1);
+  });
+});
+
+describe('IncomingPacketPipeline / #1 group card self-heal', () => {
+  function makeGroupMsgPipeline() {
+    const identity = IdentityService.memory('10001');
+    const events = new BridgeEventBus();
+    const pipeline = new IncomingPacketPipeline({
+      identity,
+      events,
+      refreshMemberCache: vi.fn(async () => false),
+      resolveStrangerProfile: vi.fn(async () => null),
+      resolveGroupJoinRequest: vi.fn(async () => null),
+    });
+    return { identity, pipeline };
+  }
+
+  const groupMsg = (senderCard: string): QQEventVariant => ({
+    kind: 'group_message', time: 1, selfUin: 10001, groupId: 9999, senderUin: 222,
+    senderNick: 'BaseNick', senderCard, senderRole: 'member',
+    msgSeq: 1, msgId: 1, elements: [{ type: 'text', text: 'hi' }],
+  } as QQEventVariant);
+
+  const member = (card: string) => ({
+    uin: 222, uid: '', nickname: 'BaseNick', card, role: 'member',
+    level: 0, title: '', joinTime: 0, lastSentTime: 0, shutUpTime: 0,
+  });
+
+  it('updates the cached member card when a group_message carries a fresher card', () => {
+    const { identity, pipeline } = makeGroupMsgPipeline();
+    identity.rememberGroups([{ groupId: 9999, groupName: "g", memberCount: 1, members: new Map() } as unknown as Parameters<typeof identity.rememberGroups>[0][0]]);
+    identity.rememberGroupMembers(9999, [member('StaleCard')]);
+    pipeline.registerCmd('test.cmd', () => [groupMsg('FreshCard')]);
+    pipeline.process({ serviceCmd: 'test.cmd' } as PacketInfo);
+    expect(identity.findGroupMember(9999, 222)?.card).toBe('FreshCard');
+  });
+
+  it('does not write when the card is unchanged (gated)', () => {
+    const { identity, pipeline } = makeGroupMsgPipeline();
+    identity.rememberGroups([{ groupId: 9999, groupName: "g", memberCount: 1, members: new Map() } as unknown as Parameters<typeof identity.rememberGroups>[0][0]]);
+    identity.rememberGroupMembers(9999, [member('SameCard')]);
+    const spy = vi.spyOn(identity, 'updateGroupMember');
+    pipeline.registerCmd('test.cmd', () => [groupMsg('SameCard')]);
+    pipeline.process({ serviceCmd: 'test.cmd' } as PacketInfo);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('does not create an entry for an uncached member (no self-heal without a base)', () => {
+    const { identity, pipeline } = makeGroupMsgPipeline();
+    const spy = vi.spyOn(identity, 'updateGroupMember');
+    pipeline.registerCmd('test.cmd', () => [groupMsg('SomeCard')]);
+    pipeline.process({ serviceCmd: 'test.cmd' } as PacketInfo);
+    expect(spy).not.toHaveBeenCalled();
+    expect(identity.findGroupMember(9999, 222)).toBeNull();
+  });
+});
+
+describe('IncomingPacketPipeline / group_card_change from message traffic', () => {
+  const GROUP = 123456789;
+
+  function member(card: string): GroupMemberInfo {
+    return {
+      uin: 22222, uid: 'u_member', nickname: 'nick', card, role: 'member',
+      level: 0, title: '', joinTime: 0, lastSentTime: 0, shutUpTime: 0,
+    };
+  }
+
+  function setup(cachedCard: string) {
+    const identity = IdentityService.memory('10001');
+    identity.rememberGroups([{
+      groupId: GROUP, groupName: 'g', remark: '', memberCount: 1, memberMax: 500,
+      members: new Map([[22222, member(cachedCard)]]),
+    } as QQGroupInfo]);
+    const events = new BridgeEventBus();
+    const pipeline = new IncomingPacketPipeline({
+      identity, events,
+      refreshMemberCache: vi.fn(async () => false),
+      resolveStrangerProfile: vi.fn(async () => null),
+      resolveGroupJoinRequest: vi.fn(async () => null),
+    });
+    const captured: QQEventVariant[] = [];
+    events.onAny((e) => captured.push(e as QQEventVariant));
+    return { pipeline, captured };
+  }
+
+  function groupMsg(card: string): QQEventVariant {
+    return {
+      kind: 'group_message', time: 1700000000, selfUin: 10001, groupId: GROUP,
+      senderUin: 22222, senderNick: 'nick', senderCard: card, senderRole: 'member',
+      msgSeq: 1, msgId: 1, elements: [],
+    } as QQEventVariant;
+  }
+
+  const pkt = (): PacketInfo => ({
+    pid: 1, uin: '10001', serviceCmd: 'test.cmd', seqId: 1, retCode: 0,
+    fromClient: false, body: new Uint8Array(),
+  });
+
+  it('emits group_card_change when a known member card changes', () => {
+    const { pipeline, captured } = setup('OldCard');
+    pipeline.registerCmd('test.cmd', () => [groupMsg('NewCard')]);
+    pipeline.process(pkt());
+    const ev = captured.find((e) => e.kind === 'group_card_change');
+    expect(ev).toBeTruthy();
+    expect((ev as Extract<QQEventVariant, { kind: 'group_card_change' }>).cardOld).toBe('OldCard');
+    expect((ev as Extract<QQEventVariant, { kind: 'group_card_change' }>).cardNew).toBe('NewCard');
+    expect((ev as Extract<QQEventVariant, { kind: 'group_card_change' }>).userUin).toBe(22222);
+  });
+
+  it('does NOT emit when the card is unchanged', () => {
+    const { pipeline, captured } = setup('SameCard');
+    pipeline.registerCmd('test.cmd', () => [groupMsg('SameCard')]);
+    pipeline.process(pkt());
+    expect(captured.some((e) => e.kind === 'group_card_change')).toBe(false);
+  });
+
+  it('does NOT fabricate a change on first contact (no cached card)', () => {
+    const { pipeline, captured } = setup('');
+    pipeline.registerCmd('test.cmd', () => [groupMsg('SomeCard')]);
+    pipeline.process(pkt());
+    expect(captured.some((e) => e.kind === 'group_card_change')).toBe(false);
   });
 });
