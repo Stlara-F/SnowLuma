@@ -1,21 +1,11 @@
 name: Dev Build
 
 on:
-  workflow_dispatch:
-    inputs:
-      platforms:
-        description: Comma-separated Dev Build platforms (linux-x64-vnc, linux-arm64-vnc)
-        required: false
-        default: "linux-x64-vnc, linux-arm64-vnc"
   push:
     branches:
       - '**'
     tags-ignore:
       - 'v*'
-
-permissions:
-  contents: write
-  actions: write
 
 jobs:
   cleanup:
@@ -55,79 +45,74 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
           version: 10.28.0
           run_install: false
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'pnpm'
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Runs `tsc --noEmit` (or `tsc -b`) in every workspace package that
+      # exposes a `typecheck` script. Platform-independent, so a single
+      # ubuntu runner is sufficient.
       - name: Type check all packages
         run: pnpm typecheck
 
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - id: set-matrix
-        run: |
-          ALL_INCLUDES='[
-            {"name":"win-x64","os":"windows-latest","target":"win32-x64"},
-            {"name":"linux-x64","os":"ubuntu-latest","target":"linux-x64"},
-            {"name":"linux-arm64","os":"ubuntu-24.04-arm","target":"linux-arm64"},
-            {"name":"linux-x64-vnc","os":"ubuntu-latest","target":"linux-x64","vnc":true},
-            {"name":"linux-arm64-vnc","os":"ubuntu-24.04-arm","target":"linux-arm64","vnc":true}
-          ]'
-
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            PLATFORMS="${{ github.event.inputs.platforms }}"
-          else
-            PLATFORMS="win-x64,linux-x64,linux-arm64,linux-x64-vnc,linux-arm64-vnc"
-          fi
-
-          PLATFORMS=$(echo "$PLATFORMS" | tr -d ' ')
-          SELECTED_JSON=$(echo "$PLATFORMS" | jq -R 'split(",")')
-          FILTERED=$(echo "$ALL_INCLUDES" | jq --argjson selected "$SELECTED_JSON" '[.[] | select(.name as $n | $selected | index($n))]')
-
-          echo "matrix=$(echo "$FILTERED" | jq -c .)" >> $GITHUB_OUTPUT
-        
   build:
-    needs: [cleanup, typecheck, setup]          # 等待 setup 完成
-    if: ${{ needs.setup.outputs.matrix != '[]' }}  # 矩阵为空时跳过构建
+    needs: [cleanup, typecheck]
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.setup.outputs.matrix) }}   # 动态矩阵
+        include:
+          - name: win-x64
+            os: windows-latest
+            target: win32-x64
+          - name: linux-x64
+            os: ubuntu-latest
+            target: linux-x64
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: linux-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
           version: 10.28.0
           run_install: false
+
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'pnpm'
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Always builds the WebUI flavor — no separate "core-only" artifact.
       - name: Build project
         env:
           SNOWLUMA_TARGET: ${{ matrix.target }}
-          VITE_VNC_ENABLED: ${{ matrix.vnc && 'true' || '' }}
         run: pnpm run build:all
 
+      # Naming convention:
+      #   SnowLuma-dev-<arch>.zip|tar.gz        – zero-install (node bundled)
+      #   SnowLuma-dev-<arch>-lite.zip|tar.gz   – user provides Node >= 22
       - name: Package (windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -145,11 +130,13 @@ jobs:
           chmod +x dist/node
           tar -czf "SnowLuma-dev-${{ matrix.name }}.tar.gz" -C dist .
 
+      # Single upload step — glob picks up both variants (.zip on Windows,
+      # .tar.gz on Linux) for this matrix row.
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: SnowLuma-dev-${{ github.sha }}-${{ matrix.name }}
           path: SnowLuma-dev-${{ matrix.name }}*
-          retention-days: 30
+          retention-days: 3
           overwrite: true
           if-no-files-found: error
